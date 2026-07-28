@@ -10,9 +10,16 @@ on:
 jobs:
   notify:
     runs-on: ubuntu-latest
+    # Skip silently when the bot is not configured. Without this the job fails on
+    # every push in any fork or account that has no Telegram secrets, which
+    # reports the whole repository as broken over a notification nobody asked for.
+    env:
+      TELEGRAM_TO: ${{ secrets.TELEGRAM_TO_CHESSVIEW }}
+      TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
     steps:
       - name: send message
-        uses: appleboy/telegram-action@master
+        if: env.TELEGRAM_TO != '' && env.TELEGRAM_TOKEN != ''
+        uses: appleboy/telegram-action@v1.0.1
         with:
           to: ${{ secrets.TELEGRAM_TO_CHESSVIEW }}
           token: ${{ secrets.TELEGRAM_TOKEN }}
