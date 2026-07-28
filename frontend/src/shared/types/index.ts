@@ -47,6 +47,7 @@ export type TerminationReason =
   | "checkmate"
   | "stalemate"
   | "draw"
+  | "repetition"
   | "draw_agreement"
   | "resignation"
   | "identity_verification_failed"

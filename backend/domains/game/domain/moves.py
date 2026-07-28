@@ -20,7 +20,7 @@ def apply_player_move(
     uci: str,
     move_number: int,
     now: datetime,
-    previous_moves: Sequence[Move] = (),
+    previous_moves: Sequence[Move],
 ) -> Move:
     board = _board_with_history(game, previous_moves)
     expected_player = game.white_id if board.turn == chess.WHITE else game.black_id
@@ -61,10 +61,13 @@ def _board_with_history(game: Game, previous_moves: Sequence[Move]) -> chess.Boa
     if not previous_moves:
         return chess.Board(game.fen)
 
-    board = chess.Board(DEFAULT_GAME_START_FEN)
-    for previous_move in previous_moves:
-        try:
+    try:
+        board = chess.Board(DEFAULT_GAME_START_FEN)
+        for previous_move in previous_moves:
             board.push_uci(previous_move.uci)
-        except ValueError as exc:
-            raise IllegalMove() from exc
+    except ValueError:
+        return chess.Board(game.fen)
+
+    if board.fen() != game.fen:
+        return chess.Board(game.fen)
     return board

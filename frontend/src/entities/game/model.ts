@@ -136,6 +136,7 @@ function statusFromGameOver(reason: GameOverPayload["reason"]): GameStatus {
       return "resigned";
     case "draw_agreement":
     case "draw":
+    case "repetition":
       return "draw";
     case "clock_timeout":
     case "disconnect_timeout":

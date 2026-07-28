@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
+import chess
 import pytest
 
 from domains.game.application.commands import MakeMoveCommand
@@ -158,3 +159,37 @@ async def test_threefold_repetition_ends_game_with_repetition_reason(monkeypatch
     assert finished_game.status == GameStatus.DRAW
     assert finished_game.result == GameResult.DRAW
     assert finished_game.termination_reason == "repetition"
+
+
+@pytest.mark.asyncio
+async def test_replay_divergence_falls_back_to_authoritative_fen(monkeypatch):
+    white_id = uuid4()
+    black_id = uuid4()
+    now = datetime(2026, 4, 14, 12, 0, tzinfo=timezone.utc)
+    board = chess.Board()
+    board.push_uci("e2e4")
+    repo = InMemoryGameRepository()
+    service = GameService(repo)
+    game = Game(
+        white_id=white_id,
+        black_id=black_id,
+        fen=board.fen(),
+        last_clock_started_at=now,
+        started_at=now,
+    )
+    await repo.create(game)
+    repo.moves[game.id] = [
+        Move(game_id=game.id, user_id=white_id, uci="e2e4", fen_after=game.fen, move_number=1),
+        Move(game_id=game.id, user_id=white_id, uci="e2e4", fen_after=game.fen, move_number=1),
+    ]
+    monkeypatch.setattr("domains.game.application.services.utc_now", lambda: now)
+
+    finished_game, move = await service.make_move(
+        MakeMoveCommand(game_id=game.id, user_id=black_id, uci="e7e5")
+    )
+
+    board.push_uci("e7e5")
+    assert move is not None
+    assert move.uci == "e7e5"
+    assert finished_game.status == GameStatus.ACTIVE
+    assert finished_game.fen == board.fen()

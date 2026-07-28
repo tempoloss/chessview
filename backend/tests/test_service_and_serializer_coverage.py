@@ -458,12 +458,18 @@ def test_game_clock_moves_and_lifecycle_edges():
     assert active_player_id(game) == white_id
 
     with pytest.raises(NotYourTurn):
-        apply_player_move(game, user_id=black_id, uci="e2e4", move_number=1, now=now)
+        apply_player_move(
+            game, user_id=black_id, uci="e2e4", move_number=1, now=now, previous_moves=()
+        )
 
     with pytest.raises(IllegalMove):
-        apply_player_move(game, user_id=white_id, uci="not-a-move", move_number=1, now=now)
+        apply_player_move(
+            game, user_id=white_id, uci="not-a-move", move_number=1, now=now, previous_moves=()
+        )
 
-    move = apply_player_move(game, user_id=white_id, uci="e2e4", move_number=1, now=now)
+    move = apply_player_move(
+        game, user_id=white_id, uci="e2e4", move_number=1, now=now, previous_moves=()
+    )
     assert move.fen_after == game.fen
     assert game.white_time_ms == 59_000
     assert game.black_time_ms == 60_000
