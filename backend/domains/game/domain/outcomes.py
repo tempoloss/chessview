@@ -25,8 +25,12 @@ def apply_board_outcome(game: Game, board: chess.Board, now: datetime) -> None:
         _finish_game(game, status=GameStatus.STALEMATE, result=GameResult.DRAW, reason="stalemate", now=now)
         return
 
-    if board.is_insufficient_material() or board.is_fifty_moves() or board.is_repetition():
+    if board.is_insufficient_material() or board.is_fifty_moves():
         _finish_game(game, status=GameStatus.DRAW, result=GameResult.DRAW, reason="draw", now=now)
+        return
+
+    if board.is_repetition():
+        _finish_game(game, status=GameStatus.DRAW, result=GameResult.DRAW, reason="repetition", now=now)
         return
 
     game.last_clock_started_at = now

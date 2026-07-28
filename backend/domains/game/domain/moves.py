@@ -1,5 +1,6 @@
 """Move application rules for authoritative games."""
 
+from collections.abc import Sequence
 from datetime import datetime
 from uuid import UUID
 
@@ -8,6 +9,7 @@ import chess
 from domains.game.domain.clock import capture_clock_snapshot
 from domains.game.domain.entities import Game, Move
 from domains.game.domain.exceptions import IllegalMove, NotYourTurn
+from domains.game.domain.policies import DEFAULT_GAME_START_FEN
 from domains.game.domain.outcomes import apply_board_outcome, clear_disconnect_state
 
 
@@ -18,8 +20,9 @@ def apply_player_move(
     uci: str,
     move_number: int,
     now: datetime,
+    previous_moves: Sequence[Move] = (),
 ) -> Move:
-    board = chess.Board(game.fen)
+    board = _board_with_history(game, previous_moves)
     expected_player = game.white_id if board.turn == chess.WHITE else game.black_id
     if user_id != expected_player:
         raise NotYourTurn()
@@ -52,3 +55,16 @@ def apply_player_move(
         fen_after=game.fen,
         move_number=move_number,
     )
+
+
+def _board_with_history(game: Game, previous_moves: Sequence[Move]) -> chess.Board:
+    if not previous_moves:
+        return chess.Board(game.fen)
+
+    board = chess.Board(DEFAULT_GAME_START_FEN)
+    for previous_move in previous_moves:
+        try:
+            board.push_uci(previous_move.uci)
+        except ValueError as exc:
+            raise IllegalMove() from exc
+    return board

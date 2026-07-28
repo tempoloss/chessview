@@ -70,6 +70,7 @@ class GameService:
             uci=cmd.uci,
             move_number=len(existing_moves) + 1,
             now=now,
+            previous_moves=existing_moves,
         )
         move_entity = await self._repo.add_move(move_entity)
         game = await self._repo.update(game)
