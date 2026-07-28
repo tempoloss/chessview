@@ -75,6 +75,8 @@ services:
   frontend:
     build:
       context: ./frontend
+      args:
+        VITE_SERVER_URL: ${VITE_SERVER_URL}
     container_name: chessview-frontend
     restart: unless-stopped
     environment:
@@ -90,6 +92,8 @@ services:
     build:
       context: .
       dockerfile: ./admin-frontend/Dockerfile
+      args:
+        VITE_SERVER_URL: ${VITE_SERVER_URL}
     container_name: chessview-admin-frontend
     restart: unless-stopped
     environment:

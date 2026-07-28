@@ -207,6 +207,14 @@ try {
 
 The second command is expected to return `401` without an access token.
 
+## Published images
+
+The `Publish Images` workflow publishes production backend and static frontend images to GitHub Container Registry:
+
+- `ghcr.io/tempoloss/chessview-backend`
+- `ghcr.io/tempoloss/chessview-frontend`
+- `ghcr.io/tempoloss/chessview-admin-frontend`
+
 ## Troubleshooting
 
 - `uv` is missing: install it from <https://docs.astral.sh/uv/> or run backend checks through the existing virtual environment if present.

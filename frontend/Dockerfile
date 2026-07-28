@@ -1,4 +1,4 @@
-FROM node:22-alpine
+FROM node:22-alpine AS build
 
 WORKDIR /app
 
@@ -9,6 +9,16 @@ RUN yarn install --frozen-lockfile
 
 COPY . .
 
-EXPOSE 5173
+ARG VITE_SERVER_URL=http://localhost:8000
+ENV VITE_SERVER_URL=$VITE_SERVER_URL
 
-CMD ["yarn", "dev", "--host", "0.0.0.0", "--port", "5173"]
+RUN yarn build
+
+FROM nginx:1.29-alpine
+
+ENV BACKEND_UPSTREAM=http://backend:8000
+
+COPY nginx.conf.template /etc/nginx/templates/default.conf.template
+COPY --from=build /app/dist /usr/share/nginx/html
+
+EXPOSE 5173
