@@ -1,6 +1,6 @@
-# Scaling Readiness Notes
+# Scaling Notes and Limitations
 
-ChessView now uses Redis for shared ephemeral realtime coordination while keeping PostgreSQL as the durable source of truth. The current Docker Compose stack still runs one backend container by default, but the main process-local realtime bottlenecks have Redis-backed coordination points.
+ChessView uses Redis for named ephemeral realtime coordination points while keeping PostgreSQL as the durable source of truth. The current Docker Compose stack still runs one backend container by default; the Redis-backed mechanisms below are implemented, but multi-instance operation has not been load-tested or documented with a production load balancer.
 
 ## Redis-Backed Realtime State
 
@@ -14,9 +14,9 @@ ChessView now uses Redis for shared ephemeral realtime coordination while keepin
 - Background game monitoring uses a Redis lock named `lock:game-monitor`.
   - Only the lock owner processes timeout/auto-abort work on each poll.
 
-PostgreSQL remains authoritative for users, games, moves, chat messages, ratings, tournaments, scheduled matches, and payment emulator data. Redis data can expire or be rebuilt from durable state during reconnect flows.
+PostgreSQL remains authoritative for users, games, moves, chat messages, ratings, tournaments, scheduled matches, and payment emulator data. Redis data can expire or be rebuilt from PostgreSQL-backed state during reconnect flows; see `backend/domains/game/application/services.py` and `backend/app/ws_entry.py` for reconnect state loading.
 
-## Current Remaining Single-Deployment Assumptions
+## Current Remaining Single-Deployment Assumptions / Not Yet Proven
 
 - The default Compose stack runs one backend container.
 - Uploaded media is stored on the local filesystem under `backend/storage/`.
@@ -26,14 +26,14 @@ PostgreSQL remains authoritative for users, games, moves, chat messages, ratings
 
 ## Recommended Next Infra Move
 
-The next production-hardening step is:
+The next deployment-hardening step is:
 
 1. Keep PostgreSQL as the system of record.
 2. Run multiple stateless backend instances behind one load balancer.
 3. Move media from local disk to shared object storage before multi-instance production use.
 4. Add load tests for matchmaking, room fanout, reconnect, and timeout flows.
 
-This remains a scaling step, not a rewrite. FastAPI, the current domain structure, and browser-local Stockfish analysis can stay as they are.
+This remains a scaling mechanism change, not a rewrite. FastAPI, the current domain structure, and browser-local Stockfish analysis can stay as they are.
 
 ## What Does Not Need To Change
 

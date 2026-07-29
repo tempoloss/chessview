@@ -369,7 +369,7 @@ WebSocket endpoint находится по адресу `/ws?token=<access_token
 
 Критическая логика live-партии находится на backend. Файл `backend/domains/game/domain/moves.py` создает шахматную доску из FEN, определяет ожидаемого игрока, разбирает UCI-ход, проверяет `board.legal_moves`, обновляет часы и сохраняет новый FEN. Такой подход снижает риск, что клиент изменит состояние партии произвольно.
 
-Контроль времени реализован в доменной модели игры. При ходе создается clock snapshot, затем активному игроку начисляется increment. Фоновый монитор активных игр находится в `backend/domains/game/presentation/runtime.py`; он проверяет таймауты и disconnect grace. Эта реализация подходит для одного backend-процесса, но требует отдельной координации при горизонтальном масштабировании.
+Контроль времени реализован в доменной модели игры. При ходе создается clock snapshot, затем активному игроку начисляется increment. Фоновый монитор активных игр находится в `backend/domains/game/presentation/runtime.py`; он проверяет таймауты и disconnect grace. Координация монитора выполняется через Redis lock `lock:game-monitor`, но нагрузочное тестирование нескольких backend-инстансов не проводилось.
 
 \section{Модули приложения}
 
@@ -389,7 +389,7 @@ WebSocket endpoint находится по адресу `/ws?token=<access_token
 \endhead
 Авторизация & Identity router, JWT, password hashing, protected routes & Реализовано\\ \hline
 Профили & Profile endpoints, leaderboard, search, head-to-head & Реализовано\\ \hline
-Матчмейкинг & WebSocket queue, time controls, game creation & Реализовано, in-memory\\ \hline
+Матчмейкинг & WebSocket queue, time controls, game creation & Реализовано через Redis-backed queue\\ \hline
 Live game & Server-authoritative moves, clocks, reconnect, timeout, chat, RTC signaling & Реализовано\\ \hline
 Анализ & Local Stockfish worker, FEN/PGN, board editor & Реализовано на frontend\\ \hline
 Задачи & Puzzle catalog and attempts & Реализовано\\ \hline
@@ -397,8 +397,8 @@ Live game & Server-authoritative moves, clocks, reconnect, timeout, chat, RTC si
 Scheduled matches & Invite/accept/decline/cancel/start lifecycle & Реализовано\\ \hline
 Payments & Payment intent emulator and coin debit/refund helpers & Эмулятор\\ \hline
 Admin & Separate admin frontend and `/api/v1/admin/*` endpoints & Базовый admin scenario\\ \hline
-Shop & Local inventory in browser, profile coins display & Демонстрационный UI\\ \hline
-Clubs & Local-state club cards and create/search UI & Демонстрационный UI\\ \hline
+Shop & Marketplace/wallet API and profile coin balance & Backend-backed demo surface\\ \hline
+Clubs & Club/member API, ownership, visibility, searchable listings & Backend-backed demo surface\\ \hline
 Verification & Local face/passkey models, sessions, challenges & Архитектурная основа\\ \hline
 \end{longtable}
 \end{center}
@@ -438,7 +438,7 @@ WebSocket check & Ручная & two sessions, `queue_join`, `move` & match and 
 
 \section{Ограничения текущей реализации}
 
-Ограничения не снижают ценность проекта, а показывают границы текущей инженерной версии. ChessView рассчитан на локальный или single-instance запуск. Matchmaking queue, WebSocket rooms и game monitor находятся в памяти backend-процесса. Uploaded media хранится локально. Для горизонтального масштабирования потребуются Redis/pub-sub, распределенная координация фонового монитора и object storage.
+Ограничения не снижают ценность проекта, а показывают границы текущей инженерной версии. ChessView рассчитан на локальный или single-instance запуск. Matchmaking queue, WebSocket presence/rooms, cross-instance fanout и game monitor coordination используют Redis-backed механизмы (`backend/domains/matchmaking/application/services.py`, `backend/shared/ws_manager.py`, `backend/domains/game/presentation/runtime.py`). Uploaded media хранится локально. Для горизонтального масштабирования всё еще потребуются load balancer, object storage для media-файлов и отдельное нагрузочное тестирование.
 
 Платежный модуль является эмулятором и не интегрирован с реальным платежным провайдером. Shop и Clubs являются демонстрационными UI-модулями. Face/passkey verification содержит локальную архитектурную основу, но не является сертифицированной проверкой личности. WebSocket token в query string удобен для SPA-сценария, но требует дополнительной оценки безопасности для более строгих окружений.
 
@@ -484,7 +484,7 @@ WebSocket check & Ручная & two sessions, `queue_join`, `move` & match and 
 
 В проекте реализованы регистрация и вход, профили пользователей, история партий, матчмейкинг, серверная обработка ходов, контроль времени, reconnect/timeout logic, локальный анализ позиций, задачи, турниры, scheduled matches и административный интерфейс. Дополнительные разделы shop и clubs используются как демонстрационные расширенные сценарии, а платежи реализованы через эмулятор.
 
-Практическая ценность ChessView заключается в том, что проект показывает полный цикл разработки учебной веб-платформы: архитектуру, UI, API, базу данных, realtime events, миграции, тесты и документацию запуска. Перспективами развития являются Redis-backed matchmaking and WebSocket fanout, object storage для медиа, расширенные E2E/load tests, развитие клубов, магазина, уведомлений, античит-механизмов и серверного анализа.
+Практическая ценность ChessView заключается в том, что проект показывает полный цикл разработки учебной веб-платформы: архитектуру, UI, API, базу данных, realtime events, миграции, тесты и документацию запуска. Перспективами развития являются load-balancer setup, object storage для медиа, расширенные E2E/load tests, развитие клубов, магазина, уведомлений, античит-механизмов и серверного анализа.
 
 \unnumberedchapter{СПИСОК ИСПОЛЬЗОВАННЫХ ИСТОЧНИКОВ}
 

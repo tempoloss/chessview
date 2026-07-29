@@ -125,14 +125,14 @@ Development topology:
 
 The frontend dev server proxies `/api` and `/ws` to the backend.
 
-## Current Limitations
+## Current Limitations / Not Yet Proven
 
-The default Compose deployment still runs a single backend instance. Redis now removes the main realtime process-local coordination assumptions:
+The default Compose deployment still runs a single backend instance. Redis backs these specific realtime coordination mechanisms:
 
-- matchmaking queue state is stored in Redis
-- WebSocket presence and room membership are stored in Redis, while socket objects remain local to each backend process
-- background game monitoring uses a Redis lock so one instance owns each monitor tick
+- matchmaking queue state is stored in Redis; see `backend/domains/matchmaking/application/services.py`
+- WebSocket presence and room membership are stored in Redis, while socket objects remain local to each backend process; see `backend/shared/ws_manager.py`
+- background game monitoring uses a Redis lock so one instance owns each monitor tick; see `backend/domains/game/presentation/runtime.py`
 - avatar/media storage is local filesystem storage
 - payment workflows are emulator-based
 
-Scaling to multiple backend instances still requires load-balancer setup and shared object storage for uploaded media.
+Scaling to multiple backend instances still requires load-balancer setup, shared object storage for uploaded media, and load testing.

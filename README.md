@@ -7,7 +7,7 @@ Current baseline: `v1.0.1`
 
 ## Status
 
-ChessView is suitable for local development, diploma demonstration, and single-instance Docker Compose deployment. Redis now backs shared ephemeral realtime state for matchmaking, WebSocket presence/rooms, cross-instance fanout, and game-monitor coordination. It is not described as a hardened industrial deployment: uploaded media is still stored locally, and production load-balancer/object-storage setup is outside the current baseline.
+ChessView is suitable for local development, diploma demonstration, and single-instance Docker Compose deployment. Redis backs specific ephemeral realtime mechanisms: matchmaking queue state, WebSocket presence/rooms, cross-instance fanout, and game-monitor coordination; see [Scaling notes](docs/scaling.md) for file-level evidence. It is not described as a hardened industrial deployment: uploaded media is still stored locally, and production load-balancer/object-storage setup is outside the current baseline.
 
 ## Features
 
@@ -35,7 +35,7 @@ Extended modules:
 - payments are handled by an emulator for internal scenarios such as scheduled match or tournament entry payments.
 - face verification and passkey flows provide a local architectural foundation, not a certified identity verification service.
 
-Known limitations:
+## Limitations / Not Yet Proven
 
 - default Compose runs a single backend instance
 - Redis is required for ephemeral realtime coordination
@@ -209,7 +209,7 @@ The second command is expected to return `401` without an access token.
 
 ## Published images
 
-The `Publish Images` workflow publishes production backend and static frontend images to GitHub Container Registry:
+The `Publish Images` workflow publishes backend and static frontend images to GitHub Container Registry:
 
 - `ghcr.io/tempoloss/chessview-backend`
 - `ghcr.io/tempoloss/chessview-frontend`
