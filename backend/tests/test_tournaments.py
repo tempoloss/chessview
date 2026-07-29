@@ -161,6 +161,12 @@ class InMemoryGameRepository:
     async def get_move_counts(self, game_ids):
         return {}
 
+    async def commit(self):
+        return None
+
+    async def rollback(self):
+        return None
+
 
 class StubGameService:
     def __init__(self, game_repo):

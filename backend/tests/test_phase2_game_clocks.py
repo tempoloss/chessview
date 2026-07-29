@@ -50,6 +50,12 @@ class InMemoryGameRepository:
     async def get_move_counts(self, game_ids):
         return {game_id: len(self.moves.get(game_id, [])) for game_id in game_ids}
 
+    async def commit(self):
+        return None
+
+    async def rollback(self):
+        return None
+
 
 @pytest.mark.asyncio
 async def test_disconnect_grace_auto_aborts_game_before_meaningful_start(monkeypatch):

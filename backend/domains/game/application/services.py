@@ -53,7 +53,7 @@ class GameService:
             now=now,
             rated=cmd.rated,
         )
-        return await self._repo.create(game)
+        return await self._create_and_commit(game)
 
     async def make_move(self, cmd: MakeMoveCommand) -> tuple[Game, Move | None]:
         """Validate and apply a chess move, or end the game on time if the clock has expired."""
@@ -72,8 +72,13 @@ class GameService:
             now=now,
             previous_moves=existing_moves,
         )
-        move_entity = await self._repo.add_move(move_entity)
-        game = await self._repo.update(game)
+        try:
+            move_entity = await self._repo.add_move(move_entity)
+            game = await self._repo.update(game)
+            await self._repo.commit()
+        except Exception:
+            await self._repo.rollback()
+            raise
         return game, move_entity
 
     async def resign(self, cmd: ResignCommand) -> Game:
@@ -83,7 +88,7 @@ class GameService:
         now = utc_now()
         snapshot = capture_clock_snapshot(game, now)
         resign_game(game, cmd.user_id, snapshot, now)
-        return await self._repo.update(game)
+        return await self._update_and_commit(game)
 
     async def stop_for_identity_verification_failure(self, cmd: IdentityVerificationFailureCommand) -> Game:
         """Forfeit an active game when a participant fails identity verification."""
@@ -92,7 +97,7 @@ class GameService:
         now = utc_now()
         snapshot = capture_clock_snapshot(game, now)
         forfeit_game_for_identity_failure(game, cmd.user_id, snapshot, now)
-        return await self._repo.update(game)
+        return await self._update_and_commit(game)
 
     async def accept_draw(self, cmd: AcceptDrawCommand) -> Game:
         """Finalize a draw agreement for an active game."""
@@ -101,7 +106,7 @@ class GameService:
         now = utc_now()
         snapshot = capture_clock_snapshot(game, now)
         accept_draw(game, snapshot, now)
-        return await self._repo.update(game)
+        return await self._update_and_commit(game)
 
     async def get_game(self, game_id: UUID) -> Game:
         game = await self._repo.get_by_id(game_id)
@@ -125,7 +130,7 @@ class GameService:
         now = utc_now()
         snapshot = capture_clock_snapshot(game, now)
         pause_for_disconnect(game, user_id, snapshot, now, grace_seconds)
-        return await self._repo.update(game)
+        return await self._update_and_commit(game)
 
     async def mark_reconnected(self, user_id: UUID) -> Game | None:
         game = await self._repo.get_active_by_user(user_id)
@@ -133,7 +138,7 @@ class GameService:
             return game
 
         resume_after_reconnect(game, utc_now())
-        return await self._repo.update(game)
+        return await self._update_and_commit(game)
 
     async def monitor_active_games(self) -> list[Game]:
         now = utc_now()
@@ -168,12 +173,30 @@ class GameService:
     async def _finalize_timeout(self, game: Game, losing_player_id: UUID, now: datetime, reason: str) -> Game:
         snapshot = capture_clock_snapshot(game, now)
         timeout_game(game, losing_player_id, snapshot, now, reason)
-        return await self._repo.update(game)
+        return await self._update_and_commit(game)
 
     async def _finalize_abort(self, game: Game, now: datetime, reason: str) -> Game:
         snapshot = capture_clock_snapshot(game, now)
         abort_game(game, snapshot, now, reason)
-        return await self._repo.update(game)
+        return await self._update_and_commit(game)
+
+    async def _create_and_commit(self, game: Game) -> Game:
+        try:
+            created = await self._repo.create(game)
+            await self._repo.commit()
+        except Exception:
+            await self._repo.rollback()
+            raise
+        return created
+
+    async def _update_and_commit(self, game: Game) -> Game:
+        try:
+            updated = await self._repo.update(game)
+            await self._repo.commit()
+        except Exception:
+            await self._repo.rollback()
+            raise
+        return updated
 
     async def _require_active_game(self, game_id: UUID) -> Game:
         game = await self._repo.get_by_id(game_id)

@@ -745,6 +745,12 @@ async def test_identity_verification_failure_forfeits_active_game_for_opponent()
             self.updated = updated_game
             return updated_game
 
+        async def commit(self):
+            return None
+
+        async def rollback(self):
+            return None
+
     repo = FakeRepo()
 
     stopped = await GameService(repo).stop_for_identity_verification_failure(

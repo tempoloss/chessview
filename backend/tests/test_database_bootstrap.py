@@ -102,3 +102,36 @@ async def test_seed_first_admin_creates_predictable_local_admin(monkeypatch):
     assert added_users[0].username == "admin"
     assert added_users[0].password == "hashed:admin123"
     assert added_users[0].role == "admin"
+
+
+class _AlembicOpRecorder:
+    def __init__(self) -> None:
+        self.indexes: dict[tuple[str, str], tuple[str, ...]] = {}
+
+    def create_index(self, name, table_name, columns, **_kwargs):
+        self.indexes[(table_name, name)] = tuple(str(column) for column in columns)
+
+    def __getattr__(self, _name):
+        def _noop(*_args, **_kwargs):
+            return None
+
+        return _noop
+
+
+def test_games_by_player_indexes_are_declared_in_migrations():
+    recorder = _AlembicOpRecorder()
+
+    for migration_file in sorted((ALEMBIC_SCRIPT_PATH / "versions").glob("*.py")):
+        namespace: dict[str, object] = {}
+        exec(migration_file.read_text(encoding="utf-8"), namespace)
+        namespace["op"] = recorder
+        namespace["upgrade"]()
+
+    assert recorder.indexes[("games", "ix_games_white_id_started_at_desc")] == (
+        "white_id",
+        "started_at DESC",
+    )
+    assert recorder.indexes[("games", "ix_games_black_id_started_at_desc")] == (
+        "black_id",
+        "started_at DESC",
+    )

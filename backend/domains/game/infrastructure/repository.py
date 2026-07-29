@@ -83,6 +83,13 @@ class SqlAlchemyGameRepository(AbstractGameRepository):
         await self._persist(model)
         return self._to_move_entity(model)
 
+    async def commit(self) -> None:
+        await self._session.commit()
+
+    async def rollback(self) -> None:
+        await self._session.rollback()
+
+
     async def get_moves(self, game_id: UUID) -> list[Move]:
         stmt = (
             select(MoveModel)
@@ -194,5 +201,5 @@ class SqlAlchemyGameRepository(AbstractGameRepository):
         return result.scalar_one_or_none()
 
     async def _persist(self, model: GameModel | MoveModel) -> None:
-        await self._session.commit()
+        await self._session.flush()
         await self._session.refresh(model)

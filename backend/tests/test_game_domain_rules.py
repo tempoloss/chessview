@@ -55,6 +55,12 @@ class InMemoryGameRepository:
     async def get_move_counts(self, game_ids):
         return {game_id: len(self.moves.get(game_id, [])) for game_id in game_ids}
 
+    async def commit(self):
+        return None
+
+    async def rollback(self):
+        return None
+
 
 def test_capture_clock_snapshot_reports_running_white_clock():
     now = datetime(2026, 4, 14, 12, 0, tzinfo=timezone.utc)

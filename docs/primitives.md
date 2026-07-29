@@ -124,11 +124,11 @@ A grace period is a short server-owned deadline after a disconnect. During it th
 
 A transaction is the database boundary where related writes become visible together or not at all. A chess move wants the move row and the resulting game row to agree: the move number, `fen_after`, clocks, status, and result are one logical update.
 
-**Where:** `backend/domains/game/application/services.py:66` loads existing moves, `backend/domains/game/application/services.py:75` writes the move, `backend/domains/game/application/services.py:76` updates the game, and `backend/domains/game/infrastructure/repository.py:196` commits in `_persist`.
+**Where:** `backend/domains/game/application/services.py:66` loads existing moves, `backend/domains/game/application/services.py:76` stages the move row, `backend/domains/game/application/services.py:77` stages the game row, `backend/domains/game/application/services.py:78` commits the shared unit of work, and `backend/domains/game/infrastructure/repository.py:203` flushes without committing inside individual repository methods.
 
 **What breaks if it is wrong:** 1) The move row commits. 2) The game update fails before `fen` or clocks are committed. 3) History says `e2e4` happened, but the authoritative game row still shows the old position. 4) Reconnect and REST history can disagree.
 
-**Caught by:** Nothing yet asserts that `add_move` and `update` are one database transaction; `test_game_clock_moves_and_lifecycle_edges` in `backend/tests/test_service_and_serializer_coverage.py:444` covers the domain update before persistence.
+**Caught by:** `test_make_move_rolls_back_move_when_game_update_fails` in `backend/tests/test_game_repository_transactions.py:121` asserts that a failure after staging the move leaves both the move list and authoritative game row unchanged.
 
 ### Authoritative board row
 
@@ -144,11 +144,11 @@ The board on screen is a projection. The authoritative position is the `fen` sto
 
 An index is a smaller lookup structure PostgreSQL can scan instead of reading the whole table. A query that lists games for one player by `white_id OR black_id` and orders by `started_at` is exactly the kind of query that needs index support as the games table grows.
 
-**Where:** `backend/domains/game/infrastructure/repository.py:61` implements `list_by_user` with `white_id OR black_id`, `backend/domains/game/infrastructure/repository.py:71` orders by newest games, and migrations show explicit index creation elsewhere at `backend/alembic/versions/0003_platform_expansion.py:71`.
+**Where:** `backend/domains/game/infrastructure/repository.py:61` implements `list_by_user` with `white_id OR black_id`, `backend/domains/game/infrastructure/repository.py:71` orders by newest games, and `backend/alembic/versions/0011_game_player_history_indexes.py:19` creates `ix_games_white_id_started_at_desc` plus `ix_games_black_id_started_at_desc` so each side of the `OR` has an equality column before the `started_at DESC` sort column.
 
 **What breaks if it is wrong:** 1) A long-time player opens history. 2) PostgreSQL scans many game rows to find that player. 3) The request gets slower as the site grows. 4) Enough users do it at once and ordinary gameplay endpoints compete for database time.
 
-**Caught by:** Nothing yet checks an execution plan or verifies a games-by-player index exists.
+**Caught by:** `test_games_by_player_indexes_are_declared_in_migrations` in `backend/tests/test_database_bootstrap.py:120` verifies the Alembic upgrade path declares both games-by-player indexes with the filter column before `started_at DESC`.
 
 ### Alembic migration
 

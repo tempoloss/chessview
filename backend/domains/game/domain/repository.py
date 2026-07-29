@@ -55,3 +55,13 @@ class AbstractGameRepository(ABC):
     async def get_move_counts(self, game_ids: list[UUID]) -> dict[UUID, int]:
         """Return move counts for a collection of game IDs."""
         ...
+
+    @abstractmethod
+    async def commit(self) -> None:
+        """Commit the current unit of work."""
+        ...
+
+    @abstractmethod
+    async def rollback(self) -> None:
+        """Roll back the current unit of work."""
+        ...
