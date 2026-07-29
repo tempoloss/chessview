@@ -450,7 +450,13 @@ async def test_scheduled_tournament_match_start_creates_game_and_links_pairing()
         def add(self, item):
             self.added.append(item)
 
+        async def flush(self):
+            return None
+
         async def commit(self):
+            return None
+
+        async def rollback(self):
             return None
 
         async def refresh(self, _item):

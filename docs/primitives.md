@@ -144,7 +144,9 @@ The board on screen is a projection. The authoritative position is the `fen` sto
 
 An index is a smaller lookup structure PostgreSQL can scan instead of reading the whole table. A query that lists games for one player by `white_id OR black_id` and orders by `started_at` is exactly the kind of query that needs index support as the games table grows.
 
-**Where:** `backend/domains/game/infrastructure/repository.py:61` implements `list_by_user` with `white_id OR black_id`, `backend/domains/game/infrastructure/repository.py:71` orders by newest games, and `backend/alembic/versions/0011_game_player_history_indexes.py:19` creates `ix_games_white_id_started_at_desc` plus `ix_games_black_id_started_at_desc` so each side of the `OR` has an equality column before the `started_at DESC` sort column.
+**Where:** `backend/domains/game/infrastructure/repository.py:61` implements `list_by_user` with `white_id OR black_id`, `backend/domains/game/infrastructure/repository.py:71` orders by newest games, and `backend/alembic/versions/0011_game_player_history_indexes.py:19` creates `ix_games_white_id_started_at_desc` plus `ix_games_black_id_started_at_desc` — one per side of the `OR`, because a single index cannot serve both branches.
+
+Measured on PostgreSQL 16 with 60,000 games and 200 users, for a player with 600 of them: with the indexes the planner uses `BitmapOr` over both `Bitmap Index Scan`s and touches 600 rows; with them dropped it falls back to `Seq Scan` and reports `Rows Removed by Filter: 59400`. What the indexes do NOT do is remove the sort — `BitmapOr` does not preserve index order, so the plan still runs a `top-N heapsort`, just over 600 rows instead of 60,000. The `started_at DESC` column is there for the single-side variant of this query, not for this one.
 
 **What breaks if it is wrong:** 1) A long-time player opens history. 2) PostgreSQL scans many game rows to find that player. 3) The request gets slower as the site grows. 4) Enough users do it at once and ordinary gameplay endpoints compete for database time.
 
