@@ -1,0 +1,6 @@
+# Canonicalise author identities for git log, shortlog and blame.
+# tempoloss's own commits landed under several misconfigured identities.
+tempoloss <304178922+tempoloss@users.noreply.github.com> <an8kk.sa@gmail.com>
+tempoloss <304178922+tempoloss@users.noreply.github.com> <you@example.com>
+# Ventie Ravelle is a separate contributor; only his name spelling is unified.
+Ventie Ravelle <VentieRavelle@gmail.com> <VentieRavelle@gmail.com>
