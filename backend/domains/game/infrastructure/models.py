@@ -7,7 +7,7 @@ Domain layer must never import this module.
 from datetime import datetime
 import uuid
 
-from sqlalchemy import Boolean, Integer, String, Text
+from sqlalchemy import Boolean, Index, Integer, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from infrastructure.database import Base
@@ -25,6 +25,16 @@ class GameModel(Base):
     """ORM model for the `games` table."""
 
     __tablename__ = "games"
+
+    # A game has two player columns, so "my games, newest first" is an OR over
+    # white_id and black_id. PostgreSQL answers that with a BitmapOr over one
+    # index per branch, which is why this is two indexes and not one composite.
+    # They are declared here as well as in 0011_game_player_history_indexes so
+    # `alembic check` does not read them as indexes the models never asked for.
+    __table_args__ = (
+        Index("ix_games_white_id_started_at_desc", "white_id", text("started_at DESC")),
+        Index("ix_games_black_id_started_at_desc", "black_id", text("started_at DESC")),
+    )
 
     id: Mapped[uuid.UUID] = uuid_primary_key()
 

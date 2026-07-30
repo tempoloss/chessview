@@ -136,7 +136,7 @@ A transaction is the database boundary where related writes become visible toget
 
 The board on screen is a projection. The authoritative position is the `fen` stored on the game, with move rows as history; if replayed move history diverges, the domain code falls back to the stored `fen` rather than trusting a broken replay.
 
-**Where:** `backend/domains/game/infrastructure/models.py:50` stores `GameModel.fen`, `backend/domains/game/infrastructure/models.py:73` stores `MoveModel.fen_after`, and `backend/domains/game/domain/moves.py:60` rebuilds from move history but returns to the stored `game.fen` on divergence.
+**Where:** `backend/domains/game/infrastructure/models.py:60` stores `GameModel.fen`, `backend/domains/game/infrastructure/models.py:83` stores `MoveModel.fen_after`, and `backend/domains/game/domain/moves.py:60` rebuilds from move history but returns to the stored `game.fen` on divergence.
 
 **What breaks if it is wrong:** 1) A process keeps the board only in memory. 2) That process restarts or another process handles the reconnect. 3) The new process has no authoritative board. 4) A player can be shown a legal-move set for the wrong position.
 
@@ -149,6 +149,8 @@ An index is a smaller lookup structure PostgreSQL can scan instead of reading th
 **Where:** `backend/domains/game/infrastructure/repository.py:61` implements `list_by_user` with `white_id OR black_id`, `backend/domains/game/infrastructure/repository.py:71` orders by newest games, and `backend/alembic/versions/0011_game_player_history_indexes.py:19` creates `ix_games_white_id_started_at_desc` plus `ix_games_black_id_started_at_desc` — one per side of the `OR`, because a single index cannot serve both branches.
 
 Measured on PostgreSQL 16 with 60,000 games and 200 users, for a player with 600 of them: with the indexes the planner uses `BitmapOr` over both `Bitmap Index Scan`s and touches 600 rows; with them dropped it falls back to `Seq Scan` and reports `Rows Removed by Filter: 59400`. What the indexes do NOT do is remove the sort — `BitmapOr` does not preserve index order, so the plan still runs a `top-N heapsort`, just over 600 rows instead of 60,000. The `started_at DESC` column is there for the single-side variant of this query, not for this one.
+
+A migration is not the only place the schema is written down; the ORM model is the other, and `alembic check` compares them. Created by the migration but missing from `GameModel`, these two indexes read to autogenerate as indexes nobody asked for, and the check failed with a `remove_index` for each — the CI job that runs it stayed red until the model declared them. `backend/domains/game/infrastructure/models.py:34` declares them, spelled the way the migration spells them.
 
 **What breaks if it is wrong:** 1) A long-time player opens history. 2) PostgreSQL scans many game rows to find that player. 3) The request gets slower as the site grows. 4) Enough users do it at once and ordinary gameplay endpoints compete for database time.
 

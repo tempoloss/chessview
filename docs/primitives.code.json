@@ -1180,8 +1180,8 @@
     {
      "file": "backend/domains/game/infrastructure/models.py",
      "start": 24,
-     "end": 50,
-     "sha256": "a51403a64424a4c2c1c2da22c8f03506452c81edeb916b86842620f217da12ef",
+     "end": 60,
+     "sha256": "1d5b40605ac04735927a51becc903652a44fec7a61ea7ea1ebc3d117d6c02597",
      "first": "class GameModel(Base):",
      "last": "fen: Mapped[str] = mapped_column(Text, nullable=False)",
      "why": "Этот ORM model показывает, что board position живет в persistent games.fen, а не только в памяти backend process.",
@@ -1192,27 +1192,27 @@
        "text": "GameModel — SQLAlchemy representation authoritative games table."
       },
       {
-       "line": 31,
+       "line": 41,
        "code": "white_id: Mapped[uuid.UUID] = uuid_reference(\"users.id\")",
        "text": "white_id связывает board state с одним участником игры."
       },
       {
-       "line": 32,
+       "line": 42,
        "code": "black_id: Mapped[uuid.UUID] = uuid_reference(\"users.id\")",
        "text": "black_id задает второго участника, что важно для turn/legal-move checks вокруг FEN."
       },
       {
-       "line": 39,
+       "line": 49,
        "code": "last_clock_started_at: Mapped[datetime | None] = utc_timestamp_column(nullable=True)",
        "text": "last_clock_started_at хранится рядом с FEN, потому clock snapshot и board state переживают process restart вместе."
       },
       {
-       "line": 48,
+       "line": 58,
        "code": "status: Mapped[str] = mapped_column(String(GAME_STATUS_LENGTH), nullable=False)",
        "text": "status хранится в games row, чтобы finished game не зависела от replay в памяти."
       },
       {
-       "line": 50,
+       "line": 60,
        "code": "fen: Mapped[str] = mapped_column(Text, nullable=False)",
        "text": "fen — load-bearing authoritative board row; именно это значение используется как fallback при divergence."
       }
@@ -1328,6 +1328,32 @@
        "line": 78,
        "code": "return [self._to_game_entity(model) for model in models], total",
        "text": "Return объединяет page и total, поэтому обе части query должны оставаться быстрыми под нагрузкой."
+      }
+     ]
+    },
+    {
+     "file": "backend/domains/game/infrastructure/models.py",
+     "start": 29,
+     "end": 37,
+     "sha256": "4083634102d865957e9c6b287cbfa28fc828abd8de5007406f42596e57275253",
+     "first": "# A game has two player columns, so \"my games, newest first\" is an OR over",
+     "last": ")",
+     "why": "Здесь объявление индексов на стороне модели: та же пара индексов, что создаёт миграция, иначе проверка дрейфа схемы валит CI.",
+     "notes": [
+      {
+       "line": 34,
+       "code": "__table_args__ = (",
+       "text": "Схема описана в двух местах: здесь в модели и в миграции. alembic check сравнивает их, поэтому индекс, созданный миграцией, обязан быть объявлен и тут, иначе autogenerate считает его лишним."
+      },
+      {
+       "line": 35,
+       "code": "Index(\"ix_games_white_id_started_at_desc\", \"white_id\", text(\"started_at DESC\")),",
+       "text": "Первая ветка OR-запроса истории: white_id, затем started_at DESC. Написание повторяет миграцию буквально, иначе alembic видит два разных индекса."
+      },
+      {
+       "line": 36,
+       "code": "Index(\"ix_games_black_id_started_at_desc\", \"black_id\", text(\"started_at DESC\")),",
+       "text": "Вторая ветка того же OR: black_id. Один составной индекс по двум колонкам не помог бы — PostgreSQL берёт по индексу на ветку и объединяет их через BitmapOr."
       }
      ]
     }
@@ -1927,11 +1953,11 @@
    "code": "@pytest.mark.asyncio"
   },
   {
-   "ref": "backend/domains/game/infrastructure/models.py:50",
+   "ref": "backend/domains/game/infrastructure/models.py:60",
    "code": "fen: Mapped[str] = mapped_column(Text, nullable=False)"
   },
   {
-   "ref": "backend/domains/game/infrastructure/models.py:73",
+   "ref": "backend/domains/game/infrastructure/models.py:83",
    "code": "fen_after: Mapped[str] = mapped_column(Text, nullable=False)"
   },
   {
@@ -2029,6 +2055,10 @@
   {
    "ref": ".github/workflows/pr-ci.yml:232",
    "code": "- name: Run desktop E2E tests"
+  },
+  {
+   "ref": "backend/domains/game/infrastructure/models.py:34",
+   "code": "__table_args__ = ("
   }
  ]
 }
