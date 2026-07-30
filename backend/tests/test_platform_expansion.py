@@ -498,6 +498,9 @@ async def test_live_scheduled_match_cannot_be_rescheduled():
         async def refresh(self, _item):
             raise AssertionError("live match reschedule should not refresh")
 
+        async def rollback(self):
+            raise AssertionError("live match reschedule writes nothing, so it has nothing to roll back")
+
     with pytest.raises(HTTPException) as exc_info:
         await ScheduledMatchService(FakeSession()).reschedule(
             match_id,
@@ -672,6 +675,9 @@ async def test_rating_repository_updates_only_the_matching_speed_rating():
 
         async def refresh(self, _item):
             return None
+
+        async def rollback(self):
+            raise AssertionError("this rating update succeeds, so nothing should roll it back")
 
     session = FakeSession()
     update = await SqlAlchemyRatingRepository(session).apply_game_rating(game_id)

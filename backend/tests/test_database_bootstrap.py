@@ -85,6 +85,9 @@ async def test_seed_first_admin_creates_predictable_local_admin(monkeypatch):
         async def commit(self):
             pass
 
+        async def rollback(self):
+            raise AssertionError("seeding the first admin either commits or raises, it never rolls back")
+
     def fake_sessionmaker(_engine, expire_on_commit=False):
         assert expire_on_commit is False
         return lambda: FakeSession()
