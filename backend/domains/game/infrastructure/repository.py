@@ -89,7 +89,6 @@ class SqlAlchemyGameRepository(AbstractGameRepository):
     async def rollback(self) -> None:
         await self._session.rollback()
 
-
     async def get_moves(self, game_id: UUID) -> list[Move]:
         stmt = (
             select(MoveModel)

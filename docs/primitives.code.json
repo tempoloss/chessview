@@ -1945,7 +1945,7 @@
    "code": "await self._repo.commit()"
   },
   {
-   "ref": "backend/domains/game/infrastructure/repository.py:203",
+   "ref": "backend/domains/game/infrastructure/repository.py:202",
    "code": "async def _persist(self, model: GameModel | MoveModel) -> None:"
   },
   {

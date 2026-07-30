@@ -126,7 +126,7 @@ A grace period is a short server-owned deadline after a disconnect. During it th
 
 A transaction is the database boundary where related writes become visible together or not at all. A chess move wants the move row and the resulting game row to agree: the move number, `fen_after`, clocks, status, and result are one logical update.
 
-**Where:** `backend/domains/game/application/services.py:66` loads existing moves, `backend/domains/game/application/services.py:76` stages the move row, `backend/domains/game/application/services.py:77` stages the game row, `backend/domains/game/application/services.py:78` commits the shared unit of work, and `backend/domains/game/infrastructure/repository.py:203` flushes without committing inside individual repository methods.
+**Where:** `backend/domains/game/application/services.py:66` loads existing moves, `backend/domains/game/application/services.py:76` stages the move row, `backend/domains/game/application/services.py:77` stages the game row, `backend/domains/game/application/services.py:78` commits the shared unit of work, and `backend/domains/game/infrastructure/repository.py:202` flushes without committing inside individual repository methods.
 
 **What breaks if it is wrong:** 1) The move row commits. 2) The game update fails before `fen` or clocks are committed. 3) History says `e2e4` happened, but the authoritative game row still shows the old position. 4) Reconnect and REST history can disagree.
 
