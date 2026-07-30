@@ -2,6 +2,8 @@
 
 This document explains the runtime primitives ChessView rests on, from the mechanism upward to the code that depends on it. Every entry below is anchored to code or tests in this repository; if an entry says nothing catches it yet, that is intentional.
 
+The line-by-line annotations behind these entries live in [`primitives.code.json`](primitives.code.json): the cited ranges, the note lines, and a fingerprint of the code each one was written against. `python3 scripts/check_primitives_anchors.py` fails when an anchor in this file or in that one no longer points at the code it describes, and CI runs it on every push.
+
 ## WebSockets
 
 ### WebSocket connection

@@ -1,0 +1,2034 @@
+{
+ "schema": 1,
+ "repo": "chessview",
+ "cards": [
+  {
+   "title": "WebSocket connection",
+   "walk": "Клиент открывает WebSocket с JWT в query string и сразу переводит локальное состояние в connecting. Серверный endpoint достает token, проверяет его как access-токен, делает accept и регистрирует сокет в ConnectionManager, чтобы последующие события можно было доставлять без нового HTTP-запроса.",
+   "snippets": [
+    {
+     "file": "backend/app/ws_entry.py",
+     "start": 86,
+     "end": 105,
+     "sha256": "01823e2bbd990a250a4134d118a0966e338c1d567aa3a6fcca2015dabcb987da",
+     "first": "async def ws_endpoint(websocket: WebSocket) -> None:",
+     "last": "active_game = await _restore_active_room_membership(user_id)",
+     "why": "Этот диапазон показывает серверную сторону upgrade: до accept соединение не считается рабочим, а после manager.connect оно становится адресуемым по user_id.",
+     "notes": [
+      {
+       "line": 88,
+       "code": "token = websocket.query_params.get(\"token\")",
+       "text": "Сервер берет token именно из query string, то есть из того места, куда его кладет frontend WebSocket-клиент."
+      },
+      {
+       "line": 94,
+       "code": "payload = decode_token(token)",
+       "text": "decode_token выполняется до accept, поэтому неподписанный или просроченный JWT не превращается в активный сокет."
+      },
+      {
+       "line": 95,
+       "code": "if payload.get(\"type\") != \"access\":",
+       "text": "Проверка type отделяет access-токены от refresh/reset-токенов, которые не должны открывать игровой канал."
+      },
+      {
+       "line": 103,
+       "code": "await websocket.accept()",
+       "text": "accept завершает HTTP upgrade; до этой строки браузер еще не получил полноценный WebSocket."
+      },
+      {
+       "line": 104,
+       "code": "await manager.connect(user_id, websocket)",
+       "text": "ConnectionManager связывает проверенный user_id с объектом WebSocket, и дальнейшие broadcast могут найти этот процесс-локальный сокет."
+      },
+      {
+       "line": 105,
+       "code": "active_game = await _restore_active_room_membership(user_id)",
+       "text": "После reconnect сервер восстанавливает членство в активной комнате, иначе канал открыт, но game-scoped события не дойдут."
+      }
+     ]
+    },
+    {
+     "file": "frontend/src/shared/api/ws.ts",
+     "start": 96,
+     "end": 116,
+     "sha256": "9e15e4db0041d419cc302ed8aa91b1c102c1852113f6e84c1cc43b9c8d203891",
+     "first": "private open(): void {",
+     "last": "};",
+     "why": "Этот диапазон показывает клиентскую сторону открытия: браузер создает WebSocket и публикует состояние соединения для UI.",
+     "notes": [
+      {
+       "line": 97,
+       "code": "if (!this.token) {",
+       "text": "Без access token клиент вообще не открывает socket, чтобы не создавать заведомо неавторизованный канал."
+      },
+      {
+       "line": 105,
+       "code": "const socket = new WebSocket(`${WS_BASE_URL}?token=${this.token}`);",
+       "text": "WebSocket строится с WS_BASE_URL и token в query string, что совпадает с серверным чтением websocket.query_params."
+      },
+      {
+       "line": 106,
+       "code": "this.ws = socket;",
+       "text": "Ссылка на текущий socket сохраняется, чтобы callbacks старого соединения не управляли новым."
+      },
+      {
+       "line": 107,
+       "code": "this.setConnectionState(\"connecting\");",
+       "text": "UI узнает, что соединение находится в фазе открытия, еще до события onopen."
+      },
+      {
+       "line": 109,
+       "code": "socket.onopen = () => {",
+       "text": "onopen — момент, когда браузер получил успешный upgrade от сервера."
+      },
+      {
+       "line": 114,
+       "code": "this.reconnectAttempt = 0;",
+       "text": "Успешное открытие сбрасывает счетчик reconnect, потому что текущий канал снова здоров."
+      },
+      {
+       "line": 115,
+       "code": "this.setConnectionState(\"open\");",
+       "text": "Состояние open разрешает отправку typed envelopes и убирает stale UI вроде бесконечного reconnect."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "title": "Typed event envelope",
+   "walk": "Обе стороны договариваются, что каждый frame имеет type, payload, optional game_id и timestamp. Сервер превращает текстовый frame в WSEnvelope, берет envelope.type как ключ маршрутизации и вызывает найденный handler; без этой формы socket остается просто строкой байтов.",
+   "snippets": [
+    {
+     "file": "backend/shared/events.py",
+     "start": 14,
+     "end": 53,
+     "sha256": "c95021bfa5d0b343c94d9b5cd1f0265d160177c037aeca8cee6840d0dfd28cdb",
+     "first": "class EventType(StrEnum):",
+     "last": ")",
+     "why": "Здесь задан контракт сообщения: допустимые имена событий и envelope, который делает байты маршрутизируемыми.",
+     "notes": [
+      {
+       "line": 14,
+       "code": "class EventType(StrEnum):",
+       "text": "EventType — центральный registry строк, по которым client и server называют одно и то же событие."
+      },
+      {
+       "line": 18,
+       "code": "QUEUE_JOIN = \"queue_join\"",
+       "text": "QUEUE_JOIN — пример client-to-server команды; если клиент пришлет другое имя, dispatcher ее не найдет."
+      },
+      {
+       "line": 20,
+       "code": "MOVE = \"move\"",
+       "text": "MOVE фиксирует routing key для хода, поэтому handler не угадывает действие из payload."
+      },
+      {
+       "line": 31,
+       "code": "QUEUE_JOINED = \"queue_joined\"",
+       "text": "QUEUE_JOINED показывает обратное направление: server-to-client события живут в том же namespace."
+      },
+      {
+       "line": 33,
+       "code": "GAME_STATE = \"game_state\"",
+       "text": "GAME_STATE — typed broadcast, который frontend может обработать без анализа произвольного текста."
+      },
+      {
+       "line": 41,
+       "code": "class WSEnvelope(BaseModel):",
+       "text": "WSEnvelope делает shape сообщения явным и проверяемым при разборе frame."
+      },
+      {
+       "line": 48,
+       "code": "type: str",
+       "text": "type — load-bearing routing key: именно по нему server выбирает handler."
+      },
+      {
+       "line": 49,
+       "code": "payload: dict = Field(default_factory=dict)",
+       "text": "payload оставлен словарем, потому что разные event types несут разные domain данные."
+      },
+      {
+       "line": 50,
+       "code": "game_id: str | None = None",
+       "text": "game_id отделяет game-scoped события от глобальных, чтобы ход или chat не попал в чужую комнату."
+      },
+      {
+       "line": 51,
+       "code": "timestamp: str = Field(",
+       "text": "timestamp добавляется envelope-ом, чтобы получатель видел время события без отдельного поля в каждом payload."
+      }
+     ]
+    },
+    {
+     "file": "backend/app/ws_entry.py",
+     "start": 121,
+     "end": 138,
+     "sha256": "1003ce85c697000289832e55a9e031b6ad2206bd9016db5a34e806539ee38744",
+     "first": "try:",
+     "last": "await handler(envelope, user_id, session)",
+     "why": "Этот диапазон показывает серверскую dispatch-ветку: raw frame становится envelope, а envelope.type превращается в вызов конкретного handler.",
+     "notes": [
+      {
+       "line": 123,
+       "code": "raw = await websocket.receive_text()",
+       "text": "Сокет отдает server обычный text frame; на этом уровне это еще не domain событие."
+      },
+      {
+       "line": 125,
+       "code": "data = json.loads(raw)",
+       "text": "json.loads — первый шаг от bytes/string к структуре, но еще без domain routing."
+      },
+      {
+       "line": 126,
+       "code": "envelope = WSEnvelope(**data)",
+       "text": "WSEnvelope проверяет, что у frame есть ожидаемая оболочка с type, payload и game_id."
+      },
+      {
+       "line": 128,
+       "code": "await manager.send_error(user_id, \"INVALID_EVENT\", \"Malformed envelope\")",
+       "text": "Malformed envelope отклоняется как INVALID_EVENT, иначе handler получил бы мусор."
+      },
+      {
+       "line": 131,
+       "code": "handler = EVENT_HANDLERS.get(envelope.type)",
+       "text": "EVENT_HANDLERS.get(envelope.type) — фактический server-side lookup по routing key."
+      },
+      {
+       "line": 133,
+       "code": "await manager.send_error(user_id, \"INVALID_EVENT\", f\"Unknown event type: {envelope.type}\")",
+       "text": "Unknown type явно возвращает INVALID_EVENT; это защита от расхождения client/server словаря событий."
+      },
+      {
+       "line": 136,
+       "code": "async with async_session_factory() as session:",
+       "text": "Каждое событие получает свежую DB session, чтобы handler не шарил транзакционное состояние с предыдущим frame."
+      },
+      {
+       "line": 138,
+       "code": "await handler(envelope, user_id, session)",
+       "text": "Найденный handler получает уже разобранный envelope и user_id, поэтому дальше работает domain code, а не socket bytes."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "title": "Socket drop state",
+   "walk": "Когда receive loop получает WebSocketDisconnect, endpoint не считает игру исчезнувшей: он проверяет, что закрывается текущий socket, убирает игрока из очереди и просит GameService отметить disconnect. Domain transition фиксирует текущие часы, останавливает active clock и ставит reconnect deadline; затем ConnectionManager чистит process-local socket и Redis room state.",
+   "snippets": [
+    {
+     "file": "backend/app/ws_entry.py",
+     "start": 149,
+     "end": 167,
+     "sha256": "e70d334641a95e4dae35493ee33bce40b1e7ad883a2c1bc42e95a29295a8e5c9",
+     "first": "except WebSocketDisconnect:",
+     "last": "await manager.disconnect(user_id, websocket)",
+     "why": "Здесь drop превращается из исключения WebSocket в изменение domain state и cleanup runtime membership.",
+     "notes": [
+      {
+       "line": 149,
+       "code": "except WebSocketDisconnect:",
+       "text": "WebSocketDisconnect — точка, где server узнает, что канал оборвался, а не просто молчит."
+      },
+      {
+       "line": 152,
+       "code": "is_current_connection = manager.is_current_connection(user_id, websocket)",
+       "text": "Проверка current connection не дает старому socket cleanup-ом снести новую вкладку того же user_id."
+      },
+      {
+       "line": 158,
+       "code": "await MatchmakingService().leave_queue(UUID(user_id))",
+       "text": "Игрок удаляется из matchmaking queue, потому что disconnected socket не должен внезапно получить новую пару."
+      },
+      {
+       "line": 163,
+       "code": "service = GameService(SqlAlchemyGameRepository(session))",
+       "text": "GameService строится на свежей repository/session, чтобы disconnect записался в persistent game state."
+      },
+      {
+       "line": 164,
+       "code": "disconnected_game = await service.mark_disconnected(UUID(user_id))",
+       "text": "mark_disconnected — мост от runtime drop к domain clock/grace логике."
+      },
+      {
+       "line": 167,
+       "code": "await manager.disconnect(user_id, websocket)",
+       "text": "ConnectionManager убирает socket и membership, чтобы будущие broadcasts не целились в мертвое соединение."
+      }
+     ]
+    },
+    {
+     "file": "backend/domains/game/domain/outcomes.py",
+     "start": 80,
+     "end": 85,
+     "sha256": "8c7099114fc7bb5af3cb19a0f076d62990c8fd7480abee35c4302b6db2cfdfdb",
+     "first": "def pause_for_disconnect(game: Game, user_id: UUID, snapshot: ClockSnapshot, now: datetime, grace_seconds: int) -> None:",
+     "last": "game.disconnect_grace_deadline_at = now + timedelta(seconds=grace_seconds)",
+     "why": "Эта domain transition показывает, как game state замораживается на время reconnect grace.",
+     "notes": [
+      {
+       "line": 80,
+       "code": "def pause_for_disconnect(game: Game, user_id: UUID, snapshot: ClockSnapshot, now: datetime, grace_seconds: int) -> None:",
+       "text": "pause_for_disconnect получает уже снятый ClockSnapshot и длительность grace window от service layer."
+      },
+      {
+       "line": 81,
+       "code": "game.white_time_ms = snapshot.white_time_ms",
+       "text": "white_time_ms фиксируется из snapshot, чтобы white не продолжал терять время после network drop."
+      },
+      {
+       "line": 82,
+       "code": "game.black_time_ms = snapshot.black_time_ms",
+       "text": "black_time_ms фиксируется симметрично; freeze не зависит от цвета disconnected игрока."
+      },
+      {
+       "line": 83,
+       "code": "game.last_clock_started_at = None",
+       "text": "last_clock_started_at сбрасывается, и _clock_is_running перестает списывать elapsed time."
+      },
+      {
+       "line": 84,
+       "code": "game.disconnected_player_id = user_id",
+       "text": "disconnected_player_id хранит, кто находится внутри grace window, что нужно для reconnect и timeout result."
+      },
+      {
+       "line": 85,
+       "code": "game.disconnect_grace_deadline_at = now + timedelta(seconds=grace_seconds)",
+       "text": "disconnect_grace_deadline_at — server-owned deadline, после которого runtime monitor решит abort или timeout."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "title": "Server-owned clock",
+   "walk": "WS handler передает в application layer только game_id, user_id и UCI move; оставшееся время не приходит от клиента как источник истины. GameService берет now на сервере, domain code снимает clock snapshot от сохраненного state и только там применяет increment к игроку, который сделал легальный ход.",
+   "snippets": [
+    {
+     "file": "backend/domains/game/application/services.py",
+     "start": 58,
+     "end": 74,
+     "sha256": "d7e44932f211a4bf4edc29ff5c3815bb53fa72a3d16c190f0365d5741af1abfa",
+     "first": "async def make_move(self, cmd: MakeMoveCommand) -> tuple[Game, Move | None]:",
+     "last": ")",
+     "why": "Часы считает сервер: клиент присылает только ход, а истечение времени проверяется до его применения.",
+     "notes": [
+      {
+       "line": 60,
+       "code": "game = await self._require_active_game(cmd.game_id)",
+       "text": "Игра берётся из базы — она источник истины, а не то, что прислал клиент."
+      },
+      {
+       "line": 61,
+       "code": "now = utc_now()",
+       "text": "Время берётся на сервере. Клиент не участвует в определении «сейчас»."
+      },
+      {
+       "line": 62,
+       "code": "expired_game = await self._expire_on_clock_if_needed(game, now)",
+       "text": "Проверка на истечение часов идёт ДО применения хода: иначе игрок с просроченным временем успел бы сходить."
+      },
+      {
+       "line": 64,
+       "code": "return expired_game, None",
+       "text": "Если время вышло, ход не применяется вовсе, а игра завершается по флагу."
+      },
+      {
+       "line": 67,
+       "code": "move_entity = apply_player_move(",
+       "text": "Ход применяется к доменному объекту, и там же начисляется increment — на стороне сервера."
+      }
+     ]
+    },
+    {
+     "file": "backend/domains/game/domain/moves.py",
+     "start": 16,
+     "end": 49,
+     "sha256": "3f26356e2db601b1888ffcf88c09c0b96dba8df50c9bd461c62048da64a721ec",
+     "first": "def apply_player_move(",
+     "last": "apply_board_outcome(game, board, now)",
+     "why": "Этот диапазон содержит load-bearing clock math хода: snapshot текущего времени и добавление increment стороне, сделавшей ход.",
+     "notes": [
+      {
+       "line": 25,
+       "code": "board = _board_with_history(game, previous_moves)",
+       "text": "Board восстанавливается из authoritative game state/history, чтобы clock update соответствовал настоящей стороне хода."
+      },
+      {
+       "line": 26,
+       "code": "expected_player = game.white_id if board.turn == chess.WHITE else game.black_id",
+       "text": "Expected player вычисляется сервером по board.turn, а не доверяется client UI."
+      },
+      {
+       "line": 38,
+       "code": "snapshot = capture_clock_snapshot(game, now)",
+       "text": "Clock snapshot снимается перед board.push, то есть elapsed time списывается с игрока, который сейчас ходит."
+      },
+      {
+       "line": 40,
+       "code": "game.white_time_ms = snapshot.white_time_ms + game.increment_ms",
+       "text": "Если ходил white, его оставшееся время становится snapshot minus elapsed плюс increment_ms."
+      },
+      {
+       "line": 44,
+       "code": "game.black_time_ms = snapshot.black_time_ms + game.increment_ms",
+       "text": "Если ходил black, increment применяется только к black_time_ms; opponent clock остается из snapshot."
+      },
+      {
+       "line": 46,
+       "code": "board.push(parsed_move)",
+       "text": "Только после clock update ход попадает на board, меняя turn для следующих snapshots."
+      },
+      {
+       "line": 47,
+       "code": "game.fen = board.fen()",
+       "text": "Новый FEN записывается в game как authoritative board row для reconnect и истории."
+      },
+      {
+       "line": 49,
+       "code": "apply_board_outcome(game, board, now)",
+       "text": "Outcome check может остановить clock совсем, если move завершил партию."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "title": "Redis pub/sub fanout",
+   "walk": "Один backend process публикует envelope на Redis channel конкретного instance, указав target_user_ids. Другой process держит подписчик на своем instance_channel, читает payload и доставляет событие в свои локальные WebSocket objects; без общей шины второй worker никогда не узнает о ходе, сделанном на первом.",
+   "snippets": [
+    {
+     "file": "backend/shared/ws_manager.py",
+     "start": 182,
+     "end": 200,
+     "sha256": "c7d564c211fc79f60f8445f2cf356f3a3351e60598e1546d631585e22186cb8e",
+     "first": "async def run_pubsub_listener(self, stop_event) -> None:",
+     "last": "await pubsub.aclose()",
+     "why": "Этот listener — сторона подписки fanout: backend instance принимает сообщения, адресованные его локальным сокетам.",
+     "notes": [
+      {
+       "line": 182,
+       "code": "async def run_pubsub_listener(self, stop_event) -> None:",
+       "text": "Каждый process запускает listener для доставки remote events в свои process-local WebSocket objects."
+      },
+      {
+       "line": 185,
+       "code": "pubsub = redis.pubsub()",
+       "text": "pubsub object открывает Redis subscription API, отдельный от обычных key/value операций."
+      },
+      {
+       "line": 186,
+       "code": "await pubsub.subscribe(self.instance_channel)",
+       "text": "Instance подписывается только на свой ws:instance channel, поэтому сообщения маршрутизируются к владельцу socket."
+      },
+      {
+       "line": 189,
+       "code": "message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)",
+       "text": "get_message вытаскивает опубликованные payload; без этого loop remote broadcasts остались бы в Redis."
+      },
+      {
+       "line": 195,
+       "code": "await self.deliver_pubsub_payload(str(data))",
+       "text": "deliver_pubsub_payload превращает Redis message обратно в local sends конкретным user_id."
+      },
+      {
+       "line": 198,
+       "code": "await pubsub.unsubscribe(self.instance_channel)",
+       "text": "unsubscribe нужен для чистого shutdown, чтобы старый listener не оставлял zombie subscription."
+      },
+      {
+       "line": 200,
+       "code": "await pubsub.aclose()",
+       "text": "aclose закрывает pubsub connection, иначе runtime leak переживет остановку listener."
+      }
+     ]
+    },
+    {
+     "file": "backend/shared/ws_manager.py",
+     "start": 259,
+     "end": 265,
+     "sha256": "4b3558acf0d1efceffb142720e96198f5acb405b28409feeab1f40d6acf63604",
+     "first": "async def _publish_to_instance(self, instance_id: str, target_user_ids: list[str], event: dict) -> None:",
+     "last": "await self._redis().publish(f\"ws:instance:{instance_id}\", json.dumps(payload))",
+     "why": "Этот helper — сторона публикации fanout: он кладет envelope и remote recipients в Redis channel другого instance.",
+     "notes": [
+      {
+       "line": 259,
+       "code": "async def _publish_to_instance(self, instance_id: str, target_user_ids: list[str], event: dict) -> None:",
+       "text": "instance_id выбирает backend process, где реально живут target sockets."
+      },
+      {
+       "line": 261,
+       "code": "\"message_id\": str(uuid4()),",
+       "text": "message_id делает Redis delivery дедуплицируемым на принимающей стороне."
+      },
+      {
+       "line": 262,
+       "code": "\"target_user_ids\": target_user_ids,",
+       "text": "target_user_ids перечисляет пользователей, которым remote process должен сделать local send."
+      },
+      {
+       "line": 263,
+       "code": "\"event\": event,",
+       "text": "event остается уже typed envelope, поэтому через Redis не теряется event contract."
+      },
+      {
+       "line": 265,
+       "code": "await self._redis().publish(f\"ws:instance:{instance_id}\", json.dumps(payload))",
+       "text": "redis.publish отправляет payload в shared bus; без этой строки multi-process deployment доставлял бы только local users."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "title": "Redis presence and room state",
+   "walk": "join_room обновляет process-local maps и Redis sets, чтобы runtime знал, кто должен получать game-scoped events. Presence record отдельно сообщает, какой backend instance и connection_id сейчас владеют user_id, а TTL делает эти сведения самовосстанавливающимися после crash или потерянного disconnect.",
+   "snippets": [
+    {
+     "file": "backend/shared/ws_manager.py",
+     "start": 103,
+     "end": 114,
+     "sha256": "964e136af749ecc6b4c24fd75ad2b2de214d9292c7dd16d9ba579c45738507c4",
+     "first": "async def join_room(self, game_id: str, user_id: str) -> None:",
+     "last": "await self._write_presence(user_id, connection_id, game_id=game_id)",
+     "why": "Этот код записывает room membership одновременно в local memory и Redis, чтобы broadcasts видели всех участников игры.",
+     "notes": [
+      {
+       "line": 105,
+       "code": "self.game_rooms.setdefault(game_id, set()).add(user_id)",
+       "text": "Local game_rooms дает быстрый доступ к участникам, подключенным к текущему process."
+      },
+      {
+       "line": 106,
+       "code": "self.user_game[user_id] = game_id",
+       "text": "user_game позволяет cleanup-у понять, из какой room удалять user_id при disconnect."
+      },
+      {
+       "line": 108,
+       "code": "await redis.sadd(self._room_key(game_id), user_id)",
+       "text": "Redis set хранит membership для всех backend instances, не только текущего process."
+      },
+      {
+       "line": 109,
+       "code": "await redis.expire(self._room_key(game_id), self.ROOM_TTL_SECONDS)",
+       "text": "ROOM_TTL_SECONDS делает room membership временным runtime фактом, а не вечной записью."
+      },
+      {
+       "line": 110,
+       "code": "await redis.set(self._user_game_key(user_id), game_id, ex=self.ROOM_TTL_SECONDS)",
+       "text": "user_game key в Redis позволяет другим paths найти room по user_id и тоже истекает по TTL."
+      },
+      {
+       "line": 112,
+       "code": "connection_id = self.connection_ids.get(user_id)",
+       "text": "Presence обновляется только если у user_id есть active connection_id в этом process."
+      },
+      {
+       "line": 114,
+       "code": "await self._write_presence(user_id, connection_id, game_id=game_id)",
+       "text": "game_id добавляется в presence, чтобы routing знал не только instance, но и текущую game room."
+      }
+     ]
+    },
+    {
+     "file": "backend/shared/ws_manager.py",
+     "start": 232,
+     "end": 241,
+     "sha256": "05db5d5523e8c12b063960b45decaf3ae9a314a355325d1e20d1fbc647309d71",
+     "first": "async def _write_presence(self, user_id: str, connection_id: str, game_id: str | None = None) -> None:",
+     "last": "await self._redis().expire(self._presence_key(user_id), self.PRESENCE_TTL_SECONDS)",
+     "why": "Этот helper показывает форму Redis presence record и TTL, который предотвращает вечное присутствие мертвых sockets.",
+     "notes": [
+      {
+       "line": 232,
+       "code": "async def _write_presence(self, user_id: str, connection_id: str, game_id: str | None = None) -> None:",
+       "text": "_write_presence централизует запись владения socket-ом для user_id."
+      },
+      {
+       "line": 234,
+       "code": "\"instance_id\": self.instance_id,",
+       "text": "instance_id сообщает, в какой backend process надо публиковать remote event."
+      },
+      {
+       "line": 235,
+       "code": "\"connection_id\": connection_id,",
+       "text": "connection_id отличает текущий socket от старого, чтобы stale cleanup не удалил новую presence."
+      },
+      {
+       "line": 236,
+       "code": "\"connected_at\": datetime.now(timezone.utc).isoformat(),",
+       "text": "connected_at помогает диагностировать stale presence и heartbeat behavior."
+      },
+      {
+       "line": 238,
+       "code": "if game_id is not None:",
+       "text": "game_id добавляется только когда user_id связан с game room."
+      },
+      {
+       "line": 240,
+       "code": "await self._redis().hset(self._presence_key(user_id), mapping=mapping)",
+       "text": "hset записывает presence как hash, который broadcast path читает через hgetall."
+      },
+      {
+       "line": 241,
+       "code": "await self._redis().expire(self._presence_key(user_id), self.PRESENCE_TTL_SECONDS)",
+       "text": "PRESENCE_TTL_SECONDS гарантирует, что crash process не оставит user online навсегда."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "title": "Redis sorted set matchmaking queue",
+   "walk": "При join service сохраняет metadata игрока в Redis hash и добавляет user_id в sorted set, где score — joined_at_ms. Matching читает zrange в порядке score, подгружает metadata кандидатов и выбирает лучшего по границам time control, rating diff и tie-break по более раннему join time.",
+   "snippets": [
+    {
+     "file": "backend/domains/matchmaking/application/services.py",
+     "start": 55,
+     "end": 84,
+     "sha256": "cbdcfc1776abb585c236a98d4ee5f9f01a51bb04217633a75300764612e4646a",
+     "first": "async def join_queue(",
+     "last": "return int(rank if rank is not None else await redis.zcard(queue_key) - 1) + 1",
+     "why": "Этот диапазон показывает, как queue entry становится Redis hash плюс sorted-set member со score времени входа.",
+     "notes": [
+      {
+       "line": 65,
+       "code": "if await redis.hgetall(user_key):",
+       "text": "Повторный hgetall user_key ловит AlreadyInQueue, чтобы один user_id не занимал два места."
+      },
+      {
+       "line": 68,
+       "code": "joined_at_ms = self._clock_ms()",
+       "text": "joined_at_ms становится score для sorted set и tie-break для очередности."
+      },
+      {
+       "line": 70,
+       "code": "await redis.hset(",
+       "text": "hset сохраняет metadata, без которой zset member был бы просто UUID без rating/time control."
+      },
+      {
+       "line": 73,
+       "code": "\"rating\": rating,",
+       "text": "rating нужен для ограничения RATING_THRESHOLD при подборе пары."
+      },
+      {
+       "line": 74,
+       "code": "\"time_control_name\": time_control_name,",
+       "text": "time_control_name разделяет pools, чтобы blitz player не встретил rapid game."
+      },
+      {
+       "line": 77,
+       "code": "\"joined_at_ms\": joined_at_ms,",
+       "text": "joined_at_ms дублируется в hash, чтобы _find_best_match мог сравнить tie-break после zrange."
+      },
+      {
+       "line": 80,
+       "code": "await redis.expire(user_key, self.QUEUE_TTL_SECONDS)",
+       "text": "TTL на user hash чистит abandoned queue entries после runtime failures."
+      },
+      {
+       "line": 81,
+       "code": "await redis.zadd(queue_key, {str(user_id): float(joined_at_ms)})",
+       "text": "zadd кладет str(user_id) в mm:queue:<time_control> со score joined_at_ms."
+      },
+      {
+       "line": 83,
+       "code": "rank = await redis.zrank(queue_key, str(user_id))",
+       "text": "zrank возвращает позицию в ordered queue для ответа клиенту."
+      }
+     ]
+    },
+    {
+     "file": "backend/domains/matchmaking/application/services.py",
+     "start": 133,
+     "end": 162,
+     "sha256": "cd61629ae30bc1c045d4fa415d54c34776d0fd84a6d516a4ed81f3033d080526",
+     "first": "async def _find_best_match(self, redis, entry: QueueEntry) -> QueueEntry | None:",
+     "last": "return best_match",
+     "why": "Здесь sorted set читается обратно, а metadata определяет, кого можно безопасно сопоставить.",
+     "notes": [
+      {
+       "line": 134,
+       "code": "queue_key = self._queue_key(entry.time_control_name)",
+       "text": "Queue key строится из time_control_name, поэтому поиск начинается в правильном pool."
+      },
+      {
+       "line": 135,
+       "code": "candidate_ids = await redis.zrange(queue_key, 0, -1)",
+       "text": "zrange возвращает candidate_ids в порядке score, то есть по времени входа в очередь."
+      },
+      {
+       "line": 142,
+       "code": "other = await self._load_entry(redis, UUID(str(candidate_id)))",
+       "text": "Для каждого UUID service загружает hash metadata, потому что zset сам хранит только member и score."
+      },
+      {
+       "line": 144,
+       "code": "await redis.zrem(queue_key, str(candidate_id))",
+       "text": "Если metadata исчезла по TTL, orphan zset member удаляется, чтобы очередь не матчила призраков."
+      },
+      {
+       "line": 148,
+       "code": "if (",
+       "text": "Начало boundary check: кандидат должен совпасть с entry по параметрам партии."
+      },
+      {
+       "line": 149,
+       "code": "other.time_control_name != entry.time_control_name",
+       "text": "time_control_name не дает смешивать разные matchmaking pools."
+      },
+      {
+       "line": 150,
+       "code": "or other.initial_time_ms != entry.initial_time_ms",
+       "text": "initial_time_ms должен совпасть, иначе игроки получат разные base clocks."
+      },
+      {
+       "line": 151,
+       "code": "or other.increment_ms != entry.increment_ms",
+       "text": "increment_ms должен совпасть, иначе один match имел бы разные правила добавки времени."
+      },
+      {
+       "line": 155,
+       "code": "diff = abs(other.rating - entry.rating)",
+       "text": "rating diff измеряет качество пары после фильтрации по clock boundaries."
+      },
+      {
+       "line": 157,
+       "code": "if diff <= self.RATING_THRESHOLD and (diff < best_diff or (diff == best_diff and joined_at < best_joined_at)):",
+       "text": "Threshold плюс tie-break by joined_at выбирают допустимого и самого справедливого кандидата."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "title": "Owner-token distributed lock",
+   "walk": "Game monitor на каждой итерации генерирует уникальный owner token и пробует SET key token NX EX. Освобождение идет через Lua compare-and-delete: если старый worker проснулся после истечения TTL, его token уже не совпадет, и он не удалит lock нового владельца; наивный SET NX плюс unconditional DEL позволил бы именно это.",
+   "snippets": [
+    {
+     "file": "backend/domains/game/presentation/runtime.py",
+     "start": 24,
+     "end": 40,
+     "sha256": "6d646bc64468e91c6a6eb285b942798c7a82845666fb4a31167ab70660dcb78c",
+     "first": "GAME_MONITOR_LOCK_KEY = \"lock:game-monitor\"",
+     "last": "return bool(await redis.eval(RELEASE_LOCK_SCRIPT, 1, GAME_MONITOR_LOCK_KEY, token))",
+     "why": "Здесь видны lock key, owner token в SET NX EX и атомарный Lua release, который защищает нового владельца от stale DEL.",
+     "notes": [
+      {
+       "line": 24,
+       "code": "GAME_MONITOR_LOCK_KEY = \"lock:game-monitor\"",
+       "text": "Один Redis key сериализует game monitor между backend instances."
+      },
+      {
+       "line": 25,
+       "code": "RELEASE_LOCK_SCRIPT = \"\"\"",
+       "text": "Lua script нужен, чтобы compare и delete выполнились атомарно внутри Redis."
+      },
+      {
+       "line": 26,
+       "code": "if redis.call(\"GET\", KEYS[1]) == ARGV[1] then",
+       "text": "GET сравнивает stored token с token текущего worker; stale owner не пройдет эту проверку."
+      },
+      {
+       "line": 27,
+       "code": "return redis.call(\"DEL\", KEYS[1])",
+       "text": "DEL выполняется только после совпадения token; unconditional DEL удалил бы lock нового worker после TTL race."
+      },
+      {
+       "line": 33,
+       "code": "async def acquire_game_monitor_lock(redis, token: str, ttl_seconds: int = 5) -> bool:",
+       "text": "Acquire получает token как аргумент, поэтому caller владеет конкретной попыткой lock-а."
+      },
+      {
+       "line": 35,
+       "code": "return bool(await redis.set(GAME_MONITOR_LOCK_KEY, token, nx=True, ex=ttl_seconds))",
+       "text": "redis.set(..., nx=True, ex=ttl_seconds) означает SET key token NX EX seconds: взять lock только если его нет и поставить TTL."
+      },
+      {
+       "line": 38,
+       "code": "async def release_game_monitor_lock(redis, token: str) -> bool:",
+       "text": "Release тоже принимает token, не просто key, потому что владение нужно доказать."
+      },
+      {
+       "line": 40,
+       "code": "return bool(await redis.eval(RELEASE_LOCK_SCRIPT, 1, GAME_MONITOR_LOCK_KEY, token))",
+       "text": "eval запускает Lua compare-and-delete с тем же key и token, избегая race между GET и DEL."
+      }
+     ]
+    },
+    {
+     "file": "backend/domains/game/presentation/runtime.py",
+     "start": 43,
+     "end": 85,
+     "sha256": "05c02b12d238564abb479221f778524c7f1dbfb16ce6e047c77ab505f2246fce",
+     "first": "async def run_game_monitor(stop_event: asyncio.Event, poll_interval_seconds: float = 1.0) -> None:",
+     "last": "await release_game_monitor_lock(redis, lock_token)",
+     "why": "Этот loop показывает, где создается уникальный token, где lock gate окружает monitor work и где release вызывается только владельцем.",
+     "notes": [
+      {
+       "line": 47,
+       "code": "lock_token = f\"{INSTANCE_ID}:{uuid4()}\"",
+       "text": "lock_token включает INSTANCE_ID и uuid4, поэтому две попытки lock-а не делят один owner token."
+      },
+      {
+       "line": 50,
+       "code": "lock_acquired = await acquire_game_monitor_lock(redis, lock_token)",
+       "text": "Worker пытается приобрести lock именно с этим token; Redis сохранит его как value."
+      },
+      {
+       "line": 51,
+       "code": "if not lock_acquired:",
+       "text": "Если NX не сработал, worker не выполняет monitor work и не конкурирует за game timeouts."
+      },
+      {
+       "line": 54,
+       "code": "async with async_session_factory() as session:",
+       "text": "DB session и monitor_active_games открываются только внутри ветки lock owner."
+      },
+      {
+       "line": 57,
+       "code": "finished_games = await game_service.monitor_active_games()",
+       "text": "monitor_active_games — критическая секция: два workers здесь могли бы одновременно завершить одну партию."
+      },
+      {
+       "line": 84,
+       "code": "if lock_acquired:",
+       "text": "Release пропускается, если lock не был взят; non-owner не трогает Redis key."
+      },
+      {
+       "line": 85,
+       "code": "await release_game_monitor_lock(redis, lock_token)",
+       "text": "Release передает тот же lock_token в Lua, поэтому stale worker не удалит чужой свежий lock."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "title": "Monotonic time versus wall-clock time",
+   "walk": "Этот код измеряет elapsed thinking time через UTC wall-clock instants: service берет datetime.now(timezone.utc), а clock snapshot вычитает last_clock_started_at из now. Это не monotonic clock: NTP/manual jump назад даст игроку бесплатное время из-за зажима к нулю, а jump вперед может слишком рано снять время или зафлагать игрока.",
+   "snippets": [
+    {
+     "file": "backend/domains/game/application/services.py",
+     "start": 31,
+     "end": 36,
+     "sha256": "5181af35e723c5696b8fa9e5bb39d8f4748a3888c643207ca8c7950a80defb56",
+     "first": "def utc_now() -> datetime:",
+     "last": "return capture_clock_snapshot(game, now or utc_now()).to_payload()",
+     "why": "Этот helper показывает источник времени, который сейчас используется вместо monotonic timer.",
+     "notes": [
+      {
+       "line": 31,
+       "code": "def utc_now() -> datetime:",
+       "text": "utc_now — общий entry point service layer для текущего времени игры."
+      },
+      {
+       "line": 32,
+       "code": "return datetime.now(timezone.utc)",
+       "text": "datetime.now(timezone.utc) — wall-clock call; она может прыгнуть из-за NTP correction, DST настройки хоста или ручного изменения."
+      },
+      {
+       "line": 35,
+       "code": "def current_clock_snapshot(game: Game, now: datetime | None = None) -> dict:",
+       "text": "current_clock_snapshot позволяет тестам передать fixed now, но production path обычно берет utc_now."
+      },
+      {
+       "line": 36,
+       "code": "return capture_clock_snapshot(game, now or utc_now()).to_payload()",
+       "text": "Без явно переданного now snapshot получает wall-clock instant из utc_now и на нем строит clock payload."
+      }
+     ]
+    },
+    {
+     "file": "backend/domains/game/domain/clock.py",
+     "start": 55,
+     "end": 65,
+     "sha256": "1ffa7c0cd19c43e270fef7816dbd81de3ad35a1ef0ba42afc86a58c2e2d5bf4d",
+     "first": "def capture_clock_snapshot(game: Game, now: datetime) -> ClockSnapshot:",
+     "last": "black_time_ms = max(0, black_time_ms - elapsed_ms)",
+     "why": "Этот диапазон содержит фактическое вычисление elapsed time, чувствительное к wall-clock jumps.",
+     "notes": [
+      {
+       "line": 55,
+       "code": "def capture_clock_snapshot(game: Game, now: datetime) -> ClockSnapshot:",
+       "text": "capture_clock_snapshot принимает now от caller, поэтому тип clock source определяет корректность elapsed math."
+      },
+      {
+       "line": 60,
+       "code": "if _clock_is_running(game, running_color):",
+       "text": "Elapsed time считается только когда clock считается running; paused/disconnected games не списываются."
+      },
+      {
+       "line": 61,
+       "code": "elapsed_ms = max(0, int((now - game.last_clock_started_at).total_seconds() * 1000))",
+       "text": "Фактический elapsed call — now minus last_clock_started_at; при jump назад отрицательное значение зажимается в 0, а при jump вперед станет слишком большим."
+      },
+      {
+       "line": 63,
+       "code": "white_time_ms = max(0, white_time_ms - elapsed_ms)",
+       "text": "Для white wall-clock elapsed напрямую уменьшает white_time_ms."
+      },
+      {
+       "line": 65,
+       "code": "black_time_ms = max(0, black_time_ms - elapsed_ms)",
+       "text": "Для black тот же wall-clock elapsed уменьшает black_time_ms, поэтому forward jump может внезапно привести к timeout."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "title": "Clock snapshot",
+   "walk": "Сервер берет сохраненные clock fields, вычитает elapsed только для active side и возвращает ClockSnapshot с last_updated_at. Frontend затем локально двигает отображение от этой отметки, но это только rendering: authoritative remaining time остается тем, что сервер пересчитает в следующем snapshot.",
+   "snippets": [
+    {
+     "file": "backend/domains/game/domain/clock.py",
+     "start": 55,
+     "end": 80,
+     "sha256": "fb5560a6c7ec06be37391b9e8b53201f5d2c71f046603cadac391c380164d998",
+     "first": "def capture_clock_snapshot(game: Game, now: datetime) -> ClockSnapshot:",
+     "last": ")",
+     "why": "Этот код собирает server-owned clock snapshot, который потом уходит в game_state payload.",
+     "notes": [
+      {
+       "line": 56,
+       "code": "white_time_ms = game.white_time_ms",
+       "text": "Snapshot начинается со stored white_time_ms, то есть с последнего authoritative game row."
+      },
+      {
+       "line": 57,
+       "code": "black_time_ms = game.black_time_ms",
+       "text": "black_time_ms берется симметрично из stored state перед списанием elapsed."
+      },
+      {
+       "line": 58,
+       "code": "running_color = active_color(game)",
+       "text": "active_color вычисляется по board/game state, а не по тому, что показывает browser."
+      },
+      {
+       "line": 60,
+       "code": "if _clock_is_running(game, running_color):",
+       "text": "Списание времени происходит только если clock running; disconnect grace и finished game становятся paused."
+      },
+      {
+       "line": 61,
+       "code": "elapsed_ms = max(0, int((now - game.last_clock_started_at).total_seconds() * 1000))",
+       "text": "Elapsed time переводится в milliseconds и вычитается из active side."
+      },
+      {
+       "line": 67,
+       "code": "pause_reason = _pause_reason(game)",
+       "text": "pause_reason определяет, должен ли payload сказать frontend остановить локальный countdown."
+      },
+      {
+       "line": 72,
+       "code": "white_time_ms=white_time_ms,",
+       "text": "white_time_ms в snapshot — уже вычисленное сервером значение для текущего now."
+      },
+      {
+       "line": 74,
+       "code": "active_color=running_color if pause_reason is None else None,",
+       "text": "active_color зануляется при pause, чтобы UI не продолжал считать ход одной из сторон."
+      },
+      {
+       "line": 77,
+       "code": "disconnected_player_id=game.disconnected_player_id,",
+       "text": "disconnected_player_id попадает в snapshot, чтобы UI показывал grace state конкретного игрока."
+      },
+      {
+       "line": 79,
+       "code": "last_updated_at=now,",
+       "text": "last_updated_at — anchor, от которого frontend может честно анимировать display между server events."
+      }
+     ]
+    },
+    {
+     "file": "frontend/src/shared/hooks/useLiveClock.ts",
+     "start": 4,
+     "end": 25,
+     "sha256": "0056d7065a15f34cc6471e3961a94b934f4706ffd7a9389623e0c0912f8d7b9e",
+     "first": "function computeClock(clock: ClockState | null, now: number) {",
+     "last": "return { whiteTimeMs, blackTimeMs, graceRemainingMs };",
+     "why": "Этот hook показывает, как frontend использует snapshot только для live display, не становясь authority по clock state.",
+     "notes": [
+      {
+       "line": 9,
+       "code": "const lastUpdatedAt = new Date(clock.last_updated_at).getTime();",
+       "text": "Frontend парсит server-provided last_updated_at как начальную точку локального display countdown."
+      },
+      {
+       "line": 10,
+       "code": "const elapsedMs = Math.max(0, now - lastUpdatedAt);",
+       "text": "elapsedMs здесь измеряет только время после последнего server snapshot; это UI approximation, не доказательство remaining time."
+      },
+      {
+       "line": 11,
+       "code": "let whiteTimeMs = clock.white_time_ms;",
+       "text": "whiteTimeMs начинается с server snapshot, а не с локально сохраненного значения browser."
+      },
+      {
+       "line": 14,
+       "code": "if (!clock.is_paused && clock.active_color === \"white\") {",
+       "text": "Локальное списание white включается только если server сказал, что clock не paused и active_color white."
+      },
+      {
+       "line": 17,
+       "code": "if (!clock.is_paused && clock.active_color === \"black\") {",
+       "text": "Black countdown симметрично зависит от server-provided active_color."
+      },
+      {
+       "line": 21,
+       "code": "const graceRemainingMs = clock.grace_deadline_at",
+       "text": "grace_deadline_at тоже приходит из snapshot, поэтому UI показывает server-owned disconnect deadline."
+      },
+      {
+       "line": 25,
+       "code": "return { whiteTimeMs, blackTimeMs, graceRemainingMs };",
+       "text": "Hook возвращает computed display values; game result все равно решает backend monitor/service."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "title": "Disconnect grace period",
+   "walk": "Policy задает 20 секунд grace и порог meaningful start в два half-moves. При disconnect service снимает snapshot и ставит pause/deadline; runtime monitor позже сравнивает deadline с server now и либо делает abort для не начатой по смыслу партии, либо присуждает disconnect timeout после meaningful start.",
+   "snippets": [
+    {
+     "file": "backend/domains/game/domain/policies.py",
+     "start": 4,
+     "end": 11,
+     "sha256": "68fb44ff039731f9469ebedb2da6aad5554124724fa0fd4dbd6646a6c5d7013f",
+     "first": "MEANINGFUL_START_MOVE_COUNT = 2",
+     "last": "return move_count >= MEANINGFUL_START_MOVE_COUNT",
+     "why": "Здесь находятся product constants, которые определяют длительность grace window и границу abort versus timeout.",
+     "notes": [
+      {
+       "line": 4,
+       "code": "MEANINGFUL_START_MOVE_COUNT = 2",
+       "text": "MEANINGFUL_START_MOVE_COUNT задает, сколько moves нужно, чтобы disconnect считался результативным timeout, а не auto-abort."
+      },
+      {
+       "line": 5,
+       "code": "DEFAULT_DISCONNECT_GRACE_SECONDS = 20",
+       "text": "DEFAULT_DISCONNECT_GRACE_SECONDS — server-owned 20 секунд, которые получает игрок на reconnect."
+      },
+      {
+       "line": 10,
+       "code": "def is_meaningfully_started(move_count: int) -> bool:",
+       "text": "is_meaningfully_started централизует policy check, чтобы monitor не дублировал число 2."
+      },
+      {
+       "line": 11,
+       "code": "return move_count >= MEANINGFUL_START_MOVE_COUNT",
+       "text": "Сравнение >= означает, что ровно два half-moves уже переводят expired grace в disconnect_timeout."
+      }
+     ]
+    },
+    {
+     "file": "backend/domains/game/application/services.py",
+     "start": 125,
+     "end": 162,
+     "sha256": "616abc398408573d65f60f9f336216f245cad9a02ebe3acdd23c0050d18a38c3",
+     "first": "async def mark_disconnected(self, user_id: UUID, grace_seconds: int = DEFAULT_DISCONNECT_GRACE_SECONDS) -> Game | None:",
+     "last": "return updated_games",
+     "why": "Грейс задаётся при разрыве, а решение по нему принимает фоновый монитор — два разных места, и между ними состояние живёт в базе.",
+     "notes": [
+      {
+       "line": 125,
+       "code": "async def mark_disconnected(self, user_id: UUID, grace_seconds: int = DEFAULT_DISCONNECT_GRACE_SECONDS) -> Game | None:",
+       "text": "Отметка о разрыве связи — не завершение партии, а постановка таймера с грейсом."
+      },
+      {
+       "line": 126,
+       "code": "game = await self._repo.get_active_by_user(user_id)",
+       "text": "Активная игра ищется по игроку: разрыв приходит от сокета, а не из контекста партии."
+      },
+      {
+       "line": 131,
+       "code": "snapshot = capture_clock_snapshot(game, now)",
+       "text": "Снимок часов берётся ДО постановки на паузу, иначе время разрыва утекло бы из бюджета игрока."
+      },
+      {
+       "line": 132,
+       "code": "pause_for_disconnect(game, user_id, snapshot, now, grace_seconds)",
+       "text": "Здесь ставится дедлайн грейса. Часы останавливаются — разрыв не должен съедать время."
+      },
+      {
+       "line": 133,
+       "code": "return await self._update_and_commit(game)",
+       "text": "Изменение коммитится сразу: если процесс умрёт, дедлайн должен быть в базе, а не только в памяти."
+      },
+      {
+       "line": 143,
+       "code": "async def monitor_active_games(self) -> list[Game]:",
+       "text": "Фоновый монитор — единственное место, где грейс превращается в результат партии."
+      },
+      {
+       "line": 147,
+       "code": "if game.disconnect_grace_deadline_at is not None and game.disconnect_grace_deadline_at <= now:",
+       "text": "Сработал дедлайн грейса: игрок не вернулся вовремя."
+      },
+      {
+       "line": 149,
+       "code": "if is_meaningfully_started(move_count):",
+       "text": "Партия, в которой почти не было ходов, не записывается как поражение — она отменяется."
+      },
+      {
+       "line": 152,
+       "code": "updated_games.append(await self._finalize_timeout(game, loser_id, now, \"disconnect_timeout\"))",
+       "text": "Только здесь разрыв становится поражением, и виновником назначается отключившийся."
+      },
+      {
+       "line": 157,
+       "code": "if active_remaining_time_ms(game, now) <= 0:",
+       "text": "Отдельная ветка: время кончилось не из-за разрыва, а просто по часам."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "title": "Move transaction boundary",
+   "walk": "GameService применяет ход как один domain transition, затем ставит в сессию сразу обе записи — строку хода и обновлённую игру — и коммитит их один раз. Репозиторий больше не коммитит сам: _persist делает flush, а commit и rollback вынесены наружу, поэтому границей транзакции владеет сервис. Раньше здесь было два коммита, и падение между ними оставляло ход видимым при старом fen.",
+   "snippets": [
+    {
+     "file": "backend/domains/game/application/services.py",
+     "start": 58,
+     "end": 82,
+     "sha256": "beb674ebc0a0be93dd519ea658d49778c31373a7298d84b8f61737864cb27c0f",
+     "first": "async def make_move(self, cmd: MakeMoveCommand) -> tuple[Game, Move | None]:",
+     "last": "return game, move_entity",
+     "why": "Границей транзакции владеет сервис: оба записи ставятся в очередь и коммитятся один раз.",
+     "notes": [
+      {
+       "line": 66,
+       "code": "existing_moves = await self._repo.get_moves(cmd.game_id)",
+       "text": "Список ходов читается до применения хода — номер нового хода выводится из него, а не из счётчика в игре."
+      },
+      {
+       "line": 67,
+       "code": "move_entity = apply_player_move(",
+       "text": "apply_player_move меняет доменный объект Game в памяти: fen, часы, возможный исход. В базе пока ничего."
+      },
+      {
+       "line": 75,
+       "code": "try:",
+       "text": "Начало единственной транзакции хода. До этой правки здесь было два отдельных коммита."
+      },
+      {
+       "line": 76,
+       "code": "move_entity = await self._repo.add_move(move_entity)",
+       "text": "Строка хода ставится в сессию, но НЕ коммитится: репозиторий делает flush, не commit."
+      },
+      {
+       "line": 77,
+       "code": "game = await self._repo.update(game)",
+       "text": "Обновление игры — fen, часы, статус — тоже только ставится в сессию."
+      },
+      {
+       "line": 78,
+       "code": "await self._repo.commit()",
+       "text": "Единственный коммит. Обе записи становятся видимыми одновременно или ни одна."
+      },
+      {
+       "line": 79,
+       "code": "except Exception:",
+       "text": "Раньше падение здесь оставляло строку хода видимой, а игру со старым fen: список ходов и доска расходились."
+      },
+      {
+       "line": 80,
+       "code": "await self._repo.rollback()",
+       "text": "Откат снимает обе незакоммиченные записи. Исключение пробрасывается дальше — вызывающий обязан узнать о провале."
+      },
+      {
+       "line": 82,
+       "code": "return game, move_entity",
+       "text": "Возврат происходит уже после коммита, поэтому WebSocket-рассылка ниже по стеку объявляет ход, который точно в базе."
+      }
+     ]
+    },
+    {
+     "file": "backend/domains/game/infrastructure/repository.py",
+     "start": 84,
+     "end": 91,
+     "sha256": "2744f467d563028951cc305045792675747f33fffe42536096f1a41aac4ea04d",
+     "first": "return self._to_move_entity(model)",
+     "last": "",
+     "why": "Репозиторий отдал право коммитить наружу: он только ставит записи в сессию.",
+     "notes": [
+      {
+       "line": 86,
+       "code": "async def commit(self) -> None:",
+       "text": "commit вынесен в отдельный метод, чтобы им управлял сервис, а не каждая операция записи."
+      },
+      {
+       "line": 90,
+       "code": "await self._session.rollback()",
+       "text": "rollback нужен ровно для того, чтобы сервис мог отменить обе записи хода одной командой."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "title": "Authoritative board row",
+   "walk": "Database game row хранит current FEN как authoritative board state, а move history используется для replay только пока она согласуется с этой row. Если replay невалиден или дает другой FEN, domain code возвращается к stored game.fen, чтобы reconnect и legal moves не строились на испорченной истории.",
+   "snippets": [
+    {
+     "file": "backend/domains/game/infrastructure/models.py",
+     "start": 24,
+     "end": 50,
+     "sha256": "a51403a64424a4c2c1c2da22c8f03506452c81edeb916b86842620f217da12ef",
+     "first": "class GameModel(Base):",
+     "last": "fen: Mapped[str] = mapped_column(Text, nullable=False)",
+     "why": "Этот ORM model показывает, что board position живет в persistent games.fen, а не только в памяти backend process.",
+     "notes": [
+      {
+       "line": 24,
+       "code": "class GameModel(Base):",
+       "text": "GameModel — SQLAlchemy representation authoritative games table."
+      },
+      {
+       "line": 31,
+       "code": "white_id: Mapped[uuid.UUID] = uuid_reference(\"users.id\")",
+       "text": "white_id связывает board state с одним участником игры."
+      },
+      {
+       "line": 32,
+       "code": "black_id: Mapped[uuid.UUID] = uuid_reference(\"users.id\")",
+       "text": "black_id задает второго участника, что важно для turn/legal-move checks вокруг FEN."
+      },
+      {
+       "line": 39,
+       "code": "last_clock_started_at: Mapped[datetime | None] = utc_timestamp_column(nullable=True)",
+       "text": "last_clock_started_at хранится рядом с FEN, потому clock snapshot и board state переживают process restart вместе."
+      },
+      {
+       "line": 48,
+       "code": "status: Mapped[str] = mapped_column(String(GAME_STATUS_LENGTH), nullable=False)",
+       "text": "status хранится в games row, чтобы finished game не зависела от replay в памяти."
+      },
+      {
+       "line": 50,
+       "code": "fen: Mapped[str] = mapped_column(Text, nullable=False)",
+       "text": "fen — load-bearing authoritative board row; именно это значение используется как fallback при divergence."
+      }
+     ]
+    },
+    {
+     "file": "backend/domains/game/domain/moves.py",
+     "start": 60,
+     "end": 73,
+     "sha256": "10dff6fb9f132228bb5b92103cf9344eaf15d31df12fd6cc37c83e9edfd279e7",
+     "first": "def _board_with_history(game: Game, previous_moves: Sequence[Move]) -> chess.Board:",
+     "last": "return board",
+     "why": "Этот helper показывает replay from history и явный fallback к authoritative game.fen при любой divergence.",
+     "notes": [
+      {
+       "line": 60,
+       "code": "def _board_with_history(game: Game, previous_moves: Sequence[Move]) -> chess.Board:",
+       "text": "_board_with_history решает, какой board использовать перед validation нового move."
+      },
+      {
+       "line": 61,
+       "code": "if not previous_moves:",
+       "text": "Если history пустая, server сразу доверяет stored game.fen."
+      },
+      {
+       "line": 65,
+       "code": "board = chess.Board(DEFAULT_GAME_START_FEN)",
+       "text": "Replay начинается с DEFAULT_GAME_START_FEN, чтобы проверить, воспроизводит ли history current game.fen."
+      },
+      {
+       "line": 67,
+       "code": "board.push_uci(previous_move.uci)",
+       "text": "Каждый previous_move применяется как UCI; broken move history проявится здесь."
+      },
+      {
+       "line": 68,
+       "code": "except ValueError:",
+       "text": "Invalid UCI в истории не валит весь request, а переводит code к authoritative fallback."
+      },
+      {
+       "line": 69,
+       "code": "return chess.Board(game.fen)",
+       "text": "Fallback на game.fen сохраняет возможность продолжить с stored board row при испорченном replay."
+      },
+      {
+       "line": 71,
+       "code": "if board.fen() != game.fen:",
+       "text": "Даже валидный replay сравнивается с stored FEN, чтобы поймать silent divergence."
+      },
+      {
+       "line": 72,
+       "code": "return chess.Board(game.fen)",
+       "text": "Если replay FEN не совпал, code снова выбирает game.fen как источник истины."
+      },
+      {
+       "line": 73,
+       "code": "return board",
+       "text": "Replay board используется только когда он доказал согласованность с authoritative row."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "title": "Games-by-player indexes",
+   "walk": "Endpoint истории строит запрос по white_id OR black_id, считает все совпавшие games и отдаёт страницу по started_at descending. На каждую ветвь OR теперь есть свой индекс (миграция 0011), потому что одним индексом обе ветви не обслужить: планировщик берёт оба через BitmapOr. Замерено на 60 000 games — 600 просмотренных строк против Seq Scan с «Rows Removed by Filter: 59400». Сортировку индексы не убирают: BitmapOr не сохраняет порядок.",
+   "snippets": [
+    {
+     "file": "backend/domains/game/infrastructure/repository.py",
+     "start": 61,
+     "end": 78,
+     "sha256": "fd79e3793bb5d7cd9952e91252f1f17f85b254c7d870a9dd02c5eb6592ab9b03",
+     "first": "async def list_by_user(self, user_id: UUID, page: int = 1, size: int = 20) -> tuple[list[Game], int]:",
+     "last": "return [self._to_game_entity(model) for model in models], total",
+     "why": "Этот диапазон показывает конкретный games-by-player query, для которого нужны индексы по white_id/black_id и поддержка сортировки.",
+     "notes": [
+      {
+       "line": 61,
+       "code": "async def list_by_user(self, user_id: UUID, page: int = 1, size: int = 20) -> tuple[list[Game], int]:",
+       "text": "list_by_user — code path player history uses to page through that user's games."
+      },
+      {
+       "line": 62,
+       "code": "condition = or_(GameModel.white_id == user_id, GameModel.black_id == user_id)",
+       "text": "OR по white_id и black_id означает, что query должен быстро находить пользователя в обеих ролях."
+      },
+      {
+       "line": 64,
+       "code": "count_stmt = select(func.count()).select_from(GameModel).where(condition)",
+       "text": "Count использует тот же condition, поэтому без index медленным станет не только page fetch, но и total."
+      },
+      {
+       "line": 70,
+       "code": ".where(condition)",
+       "text": "Основной SELECT повторяет games-by-player condition и сканировал бы растущую games table без подходящих indexes."
+      },
+      {
+       "line": 71,
+       "code": ".order_by(GameModel.started_at.desc())",
+       "text": "ORDER BY started_at desc делает полезным index strategy, учитывающий newest-first history."
+      },
+      {
+       "line": 72,
+       "code": ".offset((page - 1) * size)",
+       "text": "offset pagination становится особенно дорогой, если база сначала находит и сортирует много rows."
+      },
+      {
+       "line": 73,
+       "code": ".limit(size)",
+       "text": "limit ограничивает ответ API, но не спасает database work перед ним без index support."
+      },
+      {
+       "line": 78,
+       "code": "return [self._to_game_entity(model) for model in models], total",
+       "text": "Return объединяет page и total, поэтому обе части query должны оставаться быстрыми под нагрузкой."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "title": "Alembic migration",
+   "walk": "Startup/bootstrap code собирает Alembic Config из application DB URL, указывает directory с migration scripts и обновляет schema до head в отдельном thread. Отдельные revision files затем создают tables и indexes; эти index definitions являются записанными schema changes, которые воспроизводятся в CI и production.",
+   "snippets": [
+    {
+     "file": "backend/infrastructure/database_migrations.py",
+     "start": 68,
+     "end": 111,
+     "sha256": "85c682286275426f740c5634cc3a73f97532f3e9198df32bafb07653f01907de",
+     "first": "def build_alembic_config(database_url: str | None = None) -> Config:",
+     "last": "command.upgrade(config, \"head\")",
+     "why": "Этот код является migration entry point: он конфигурирует Alembic и запускает upgrade to head.",
+     "notes": [
+      {
+       "line": 68,
+       "code": "def build_alembic_config(database_url: str | None = None) -> Config:",
+       "text": "build_alembic_config собирает Alembic Config для конкретной database URL."
+      },
+      {
+       "line": 70,
+       "code": "resolved_database_url = to_migration_database_url(database_url or settings.DATABASE_URL)",
+       "text": "Application URL переводится в sync migration URL, потому Alembic command работает через sync engine."
+      },
+      {
+       "line": 72,
+       "code": "config.set_main_option(\"script_location\", str(ALEMBIC_SCRIPT_PATH))",
+       "text": "script_location указывает Alembic, где искать versioned migration files."
+      },
+      {
+       "line": 73,
+       "code": "config.set_main_option(\"sqlalchemy.url\", resolved_database_url)",
+       "text": "sqlalchemy.url закрепляет target database для migration run."
+      },
+      {
+       "line": 78,
+       "code": "async def run_database_migrations(database_url: str | None = None) -> None:",
+       "text": "run_database_migrations — async-facing entry point, который bootstrap может вызвать перед seed."
+      },
+      {
+       "line": 81,
+       "code": "await asyncio.to_thread(_upgrade_database, config)",
+       "text": "asyncio.to_thread выносит blocking Alembic upgrade из event loop."
+      },
+      {
+       "line": 89,
+       "code": "def should_stamp_baseline(existing_tables: set[str]) -> bool:",
+       "text": "Legacy adoption check защищает уже существующую schema от случайного повторного baseline create."
+      },
+      {
+       "line": 94,
+       "code": "def validate_existing_schema(existing_tables: set[str]) -> None:",
+       "text": "validate_existing_schema fail-fast-ит partial unmanaged schema вместо тихого drift."
+      },
+      {
+       "line": 109,
+       "code": "def _upgrade_database(config: Config) -> None:",
+       "text": "_upgrade_database — sync body, который реально вызывает Alembic commands."
+      },
+      {
+       "line": 110,
+       "code": "_stamp_legacy_database_if_needed(config)",
+       "text": "Перед upgrade code пытается stamp legacy database, чтобы миграции имели корректный revision state."
+      },
+      {
+       "line": 111,
+       "code": "command.upgrade(config, \"head\")",
+       "text": "command.upgrade(config, head) применяет все revision files до HEAD_REVISION."
+      }
+     ]
+    },
+    {
+     "file": "backend/alembic/versions/0003_platform_expansion.py",
+     "start": 16,
+     "end": 44,
+     "sha256": "af33b201bc2824f5d856aeaf8966dbb0bd183fddd242e6080975759632e2000a",
+     "first": "def upgrade() -> None:",
+     "last": "op.create_index(\"ix_admin_audit_logs_actor_user_id\", \"admin_audit_logs\", [\"actor_user_id\"])",
+     "why": "Этот revision показывает реальное изменение schema с indexes: upgrade добавляет schema changes и тут же записывает index definitions в Alembic history.",
+     "notes": [
+      {
+       "line": 16,
+       "code": "def upgrade() -> None:",
+       "text": "upgrade — versioned entry point Alembic revision; все ниже становится частью воспроизводимой schema history."
+      },
+      {
+       "line": 17,
+       "code": "op.add_column(\"users\", sa.Column(\"bio\", sa.String(length=160), nullable=True))",
+       "text": "add_column показывает, что migration описывает изменение schema явно, а не полагается на ручную правку базы."
+      },
+      {
+       "line": 31,
+       "code": "op.create_table(",
+       "text": "op.create_table начинает создание admin_audit_logs в той же recorded migration."
+      },
+      {
+       "line": 34,
+       "code": "sa.Column(\"actor_user_id\", postgresql.UUID(as_uuid=True), nullable=False),",
+       "text": "actor_user_id — колонка, по которой audit log можно фильтровать по пользователю-администратору."
+      },
+      {
+       "line": 39,
+       "code": "sa.Column(\"created_at\", postgresql.TIMESTAMP(timezone=True), server_default=sa.text(\"now()\"), nullable=False),",
+       "text": "created_at — колонка для временной сортировки audit events, где full scan быстро станет дорогим."
+      },
+      {
+       "line": 43,
+       "code": "op.create_index(\"ix_admin_audit_logs_created_at\", \"admin_audit_logs\", [\"created_at\"])",
+       "text": "Индекс created_at обслуживает newest-first или time-window audit log query без чтения всей таблицы."
+      },
+      {
+       "line": 44,
+       "code": "op.create_index(\"ix_admin_audit_logs_actor_user_id\", \"admin_audit_logs\", [\"actor_user_id\"])",
+       "text": "Индекс actor_user_id ускоряет запросы «покажи действия этого actor», потому PostgreSQL может идти по lookup structure."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "title": "JWT access token",
+   "walk": "Security module создает access JWT с sub, exp и type, подписывая payload секретом и алгоритмом из settings. HTTP/WS paths должны вызывать decode_token перед доверием sub: если просто прочитать payload без verification, пользователь сможет прислать произвольный user_id как текст.",
+   "snippets": [
+    {
+     "file": "backend/infrastructure/security.py",
+     "start": 32,
+     "end": 59,
+     "sha256": "d7a8ea725862f44548253a58bcbac804537c1b9573007af3d893f06e4487ec71",
+     "first": "def create_access_token(user_id: str) -> str:",
+     "last": "return jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM])",
+     "why": "Этот диапазон показывает обе стороны JWT primitive: создание signed token и verified decode.",
+     "notes": [
+      {
+       "line": 32,
+       "code": "def create_access_token(user_id: str) -> str:",
+       "text": "create_access_token — единственная функция, которая формирует короткоживущий access token для user_id."
+      },
+      {
+       "line": 34,
+       "code": "expire = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)",
+       "text": "exp задается сервером, поэтому срок действия не приходит от клиента."
+      },
+      {
+       "line": 35,
+       "code": "payload = {\"sub\": user_id, \"exp\": expire, \"type\": \"access\"}",
+       "text": "payload несет sub, exp и type=access — ровно claims, на которые дальше опираются dependencies и WS connect."
+      },
+      {
+       "line": 36,
+       "code": "return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)",
+       "text": "jwt.encode подписывает payload JWT_SECRET и JWT_ALGORITHM; без подписи claims были бы просто user-controlled JSON."
+      },
+      {
+       "line": 53,
+       "code": "def decode_token(token: str) -> dict:",
+       "text": "decode_token — обязательная точка проверки перед тем, как server поверит sub."
+      },
+      {
+       "line": 57,
+       "code": "Raises jwt.ExpiredSignatureError, jwt.InvalidTokenError on failure.",
+       "text": "Ошибки expired/invalid token являются security boundary, а не обычной parse failure."
+      },
+      {
+       "line": 59,
+       "code": "return jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM])",
+       "text": "jwt.decode с secret и algorithms проверяет signature и exp; пропуск этой проверки превращает payload в пользовательский текст."
+      }
+     ]
+    },
+    {
+     "file": "backend/app/ws_entry.py",
+     "start": 86,
+     "end": 100,
+     "sha256": "c46524000d00f13dbbbfd81439af92dc1af4af856d42428cf824e28181510d96",
+     "first": "async def ws_endpoint(websocket: WebSocket) -> None:",
+     "last": "await websocket.close(code=4001)",
+     "why": "Этот WebSocket connect path показывает, что socket authentication тоже проходит JWT verification before accept.",
+     "notes": [
+      {
+       "line": 86,
+       "code": "async def ws_endpoint(websocket: WebSocket) -> None:",
+       "text": "ws_endpoint — entry point для /ws?token=..., где browser пытается открыть realtime channel."
+      },
+      {
+       "line": 88,
+       "code": "token = websocket.query_params.get(\"token\")",
+       "text": "Token извлекается из query params, потому WebSocket handshake не использует обычный Authorization header."
+      },
+      {
+       "line": 90,
+       "code": "await websocket.close(code=status.WS_1008_POLICY_VIOLATION)",
+       "text": "Отсутствующий token закрывает socket с policy violation до accept."
+      },
+      {
+       "line": 94,
+       "code": "payload = decode_token(token)",
+       "text": "decode_token запускает signature/expiry verification для WebSocket так же, как HTTP auth."
+      },
+      {
+       "line": 95,
+       "code": "if payload.get(\"type\") != \"access\":",
+       "text": "type должен быть access; refresh token не может стать realtime session."
+      },
+      {
+       "line": 98,
+       "code": "user_id: str = payload[\"sub\"]",
+       "text": "user_id берется из sub только после successful verification, а не из raw payload."
+      },
+      {
+       "line": 99,
+       "code": "except Exception:",
+       "text": "Любая decode/type ошибка попадает в reject path, а не в partially authenticated connection."
+      },
+      {
+       "line": 100,
+       "code": "await websocket.close(code=4001)",
+       "text": "Close code 4001 завершает invalid-token handshake без регистрации socket в manager."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "title": "Real-browser end-to-end test",
+   "walk": "Playwright управляет Chromium против настоящего backend API: регистрирует users, устанавливает browser localStorage auth, открывает страницы и сверяет UI с состоянием, видимым через API/database. CI собирает Docker stack, ждет health backend/frontend/admin, проверяет migrations и запускает yarn test:e2e с live URLs, поэтому browser, HTTP, DB и Redis проверяются вместе.",
+   "snippets": [
+    {
+     "file": "e2e/full-stack-real.spec.ts",
+     "start": 69,
+     "end": 88,
+     "sha256": "83b60b0b6727fc4ad29c5e189e4ac81d784c2c3b125554a86bbde617b234ff5e",
+     "first": "test.describe(\"real Docker stack workflows\", () => {",
+     "last": "expect(updatedMe.bio).toBe(`Full-stack E2E ${suffix}`);",
+     "why": "Это тело теста показывает real browser plus API workflow, а не unit test with mocked fetches.",
+     "notes": [
+      {
+       "line": 69,
+       "code": "test.describe(\"real Docker stack workflows\", () => {",
+       "text": "describe явно группирует сценарии как real Docker stack workflows."
+      },
+      {
+       "line": 70,
+       "code": "test(\"runs core user, scheduling, tournament, puzzle, and admin flows\", async ({ browser, page }) => {",
+       "text": "Test получает browser/page fixtures Playwright, то есть управляет настоящим Chromium context."
+      },
+      {
+       "line": 72,
+       "code": "const api = await request.newContext({ baseURL: backendUrl });",
+       "text": "APIRequestContext смотрит на backendUrl, поэтому setup идет через HTTP API, а не через in-memory mocks."
+      },
+      {
+       "line": 74,
+       "code": "const alice = await registerUser(api, `alice${suffix}`);",
+       "text": "Alice создается через register endpoint, проверяя identity API и database writes."
+      },
+      {
+       "line": 75,
+       "code": "const bob = await registerUser(api, `bob${suffix}`);",
+       "text": "Bob создается тем же путем, чтобы subsequent scheduling/tournament flows имели двух реальных пользователей."
+      },
+      {
+       "line": 77,
+       "code": "await installUserSession(page, alice);",
+       "text": "Auth кладется в localStorage как это делает frontend app, проверяя browser storage seam."
+      },
+      {
+       "line": 78,
+       "code": "await page.goto(\"/\");",
+       "text": "page.goto открывает public player app в реальном browser, а не вызывает React component напрямую."
+      },
+      {
+       "line": 83,
+       "code": "await page.getByPlaceholder(/tell the world/i).fill(`Full-stack E2E ${suffix}`);",
+       "text": "Тест вводит текст в настоящий form control, проходя DOM/event handling."
+      },
+      {
+       "line": 85,
+       "code": "await expect(page.getByText(/profile changes saved/i)).toBeVisible();",
+       "text": "UI assertion проверяет rendered feedback после HTTP save."
+      },
+      {
+       "line": 87,
+       "code": "const updatedMe = await apiGet<{ bio: string | null }>(api, \"/identity/me\", alice.access_token);",
+       "text": "API readback проверяет, что browser action дошел до backend/database state."
+      },
+      {
+       "line": 88,
+       "code": "expect(updatedMe.bio).toBe(`Full-stack E2E ${suffix}`);",
+       "text": "Сравнение bio связывает UI действие с persisted result, ловя broken frontend-backend seam."
+      }
+     ]
+    },
+    {
+     "file": ".github/workflows/pr-ci.yml",
+     "start": 204,
+     "end": 238,
+     "sha256": "78ae486fff8cdff42ddecaeed44748440af6dc54cc576d3967f59d06e81155cf",
+     "first": "- name: Install Playwright browsers",
+     "last": "run: yarn test:e2e",
+     "why": "Эти CI steps показывают, что E2E запускается против поднятого Docker stack и настоящего Chromium.",
+     "notes": [
+      {
+       "line": 204,
+       "code": "- name: Install Playwright browsers",
+       "text": "CI устанавливает Playwright browsers, чтобы тест шел в настоящем Chromium, а не в jsdom."
+      },
+      {
+       "line": 205,
+       "code": "run: yarn playwright install chromium --with-deps",
+       "text": "chromium --with-deps подтягивает системные зависимости browser runtime на runner."
+      },
+      {
+       "line": 207,
+       "code": "- name: Prepare Compose environment",
+       "text": "Compose environment готовится из .env.example, чтобы stack имел реальные service URLs/secrets."
+      },
+      {
+       "line": 211,
+       "code": "run: docker compose up --build -d",
+       "text": "docker compose up --build -d поднимает backend, PostgreSQL, Redis и frontends как интегрированный stack."
+      },
+      {
+       "line": 213,
+       "code": "- name: Wait for stack health",
+       "text": "Health wait не запускает тесты, пока HTTP seams backend/player/admin не отвечают."
+      },
+      {
+       "line": 227,
+       "code": "- name: Check Docker migrations",
+       "text": "Перед browser flow CI отдельно проверяет состояние Docker migrations."
+      },
+      {
+       "line": 229,
+       "code": "docker compose exec -T backend uv run alembic current",
+       "text": "alembic current убеждается, что контейнер backend видит migration revision."
+      },
+      {
+       "line": 230,
+       "code": "docker compose exec -T backend uv run alembic check",
+       "text": "alembic check ловит model/schema drift до E2E assertions."
+      },
+      {
+       "line": 232,
+       "code": "- name: Run desktop E2E tests",
+       "text": "Run desktop E2E tests — step, который фактически запускает browser suite."
+      },
+      {
+       "line": 234,
+       "code": "E2E_BACKEND_URL: http://127.0.0.1:8000",
+       "text": "E2E_BACKEND_URL направляет tests на live backend container endpoint."
+      },
+      {
+       "line": 238,
+       "code": "run: yarn test:e2e",
+       "text": "yarn test:e2e запускает Playwright suite against the running stack."
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "doc_anchors": [
+  {
+   "ref": "backend/app/main.py:141",
+   "code": "def _register_ws(application: FastAPI) -> None:"
+  },
+  {
+   "ref": "backend/app/ws_entry.py:86",
+   "code": "async def ws_endpoint(websocket: WebSocket) -> None:"
+  },
+  {
+   "ref": "frontend/src/shared/api/ws.ts:105",
+   "code": "const socket = new WebSocket(`${WS_BASE_URL}?token=${this.token}`);"
+  },
+  {
+   "ref": "backend/tests/test_ws_workflows.py:95",
+   "code": "async def test_ws_endpoint_authenticates_dispatches_and_maps_handler_errors(monkeypatch):"
+  },
+  {
+   "ref": "frontend/src/shared/api/__tests__/ws.test.ts:52",
+   "code": "it(\"connects with the bearer token and publishes connection state changes\", () => {"
+  },
+  {
+   "ref": "backend/shared/events.py:14",
+   "code": "class EventType(StrEnum):"
+  },
+  {
+   "ref": "backend/shared/events.py:41",
+   "code": "class WSEnvelope(BaseModel):"
+  },
+  {
+   "ref": "backend/app/ws_entry.py:131",
+   "code": "handler = EVENT_HANDLERS.get(envelope.type)"
+  },
+  {
+   "ref": "frontend/src/shared/api/__tests__/ws.test.ts:65",
+   "code": "it(\"sends typed envelopes only when the socket is open\", () => {"
+  },
+  {
+   "ref": "backend/app/ws_entry.py:149",
+   "code": "except WebSocketDisconnect:"
+  },
+  {
+   "ref": "backend/app/ws_entry.py:164",
+   "code": "disconnected_game = await service.mark_disconnected(UUID(user_id))"
+  },
+  {
+   "ref": "backend/domains/game/domain/outcomes.py:80",
+   "code": "def pause_for_disconnect(game: Game, user_id: UUID, snapshot: ClockSnapshot, now: datetime, grace_seconds: int) -> None:"
+  },
+  {
+   "ref": "backend/tests/test_game_domain_rules.py:78",
+   "code": "assert snapshot.active_color == \"white\""
+  },
+  {
+   "ref": "backend/tests/test_ws_manager.py:94",
+   "code": "async def test_current_connection_disconnect_cleans_membership() -> None:"
+  },
+  {
+   "ref": "backend/domains/game/presentation/ws_handler.py:115",
+   "code": "uci = envelope.payload.get(\"uci\", \"\")"
+  },
+  {
+   "ref": "backend/domains/game/application/services.py:61",
+   "code": "now = utc_now()"
+  },
+  {
+   "ref": "backend/domains/game/domain/clock.py:55",
+   "code": "def capture_clock_snapshot(game: Game, now: datetime) -> ClockSnapshot:"
+  },
+  {
+   "ref": "backend/tests/test_phase2_game_clocks.py:120",
+   "code": "assert finished_games[0].status == \"timeout\""
+  },
+  {
+   "ref": "backend/tests/test_ws_workflows.py:233",
+   "code": "async def test_game_ws_move_validates_game_id_and_broadcasts_state(monkeypatch):"
+  },
+  {
+   "ref": "backend/shared/ws_manager.py:148",
+   "code": "async def broadcast_to_room(self, game_id: str, event_type: str, payload: dict) -> None:"
+  },
+  {
+   "ref": "backend/shared/ws_manager.py:163",
+   "code": "for instance_id, user_ids in remote_targets.items():"
+  },
+  {
+   "ref": "backend/shared/ws_manager.py:259",
+   "code": "async def _publish_to_instance(self, instance_id: str, target_user_ids: list[str], event: dict) -> None:"
+  },
+  {
+   "ref": "backend/shared/ws_manager.py:182",
+   "code": "async def run_pubsub_listener(self, stop_event) -> None:"
+  },
+  {
+   "ref": "backend/tests/test_ws_manager.py:149",
+   "code": "async def test_broadcast_to_room_delivers_local_and_groups_remote_users_by_instance() -> None:"
+  },
+  {
+   "ref": "backend/shared/ws_manager.py:4",
+   "code": "WebSocket objects remain process-local. Redis stores ephemeral presence,"
+  },
+  {
+   "ref": "backend/shared/ws_manager.py:35",
+   "code": "PRESENCE_TTL_SECONDS = 90"
+  },
+  {
+   "ref": "backend/shared/ws_manager.py:103",
+   "code": "async def join_room(self, game_id: str, user_id: str) -> None:"
+  },
+  {
+   "ref": "backend/shared/ws_manager.py:232",
+   "code": "async def _write_presence(self, user_id: str, connection_id: str, game_id: str | None = None) -> None:"
+  },
+  {
+   "ref": "backend/tests/test_ws_manager.py:110",
+   "code": "async def test_connect_join_room_and_disconnect_update_redis_presence_and_rooms() -> None:"
+  },
+  {
+   "ref": "backend/domains/matchmaking/application/services.py:70",
+   "code": "await redis.hset("
+  },
+  {
+   "ref": "backend/domains/matchmaking/application/services.py:81",
+   "code": "await redis.zadd(queue_key, {str(user_id): float(joined_at_ms)})"
+  },
+  {
+   "ref": "backend/domains/matchmaking/application/services.py:135",
+   "code": "candidate_ids = await redis.zrange(queue_key, 0, -1)"
+  },
+  {
+   "ref": "backend/tests/test_redis_matchmaking.py:99",
+   "code": "async def test_redis_matchmaking_pairs_same_time_control_with_best_rating_diff():"
+  },
+  {
+   "ref": "backend/tests/test_redis_matchmaking.py:128",
+   "code": "async def test_redis_matchmaking_keeps_rating_and_time_control_boundaries():"
+  },
+  {
+   "ref": "backend/domains/game/presentation/runtime.py:24",
+   "code": "GAME_MONITOR_LOCK_KEY = \"lock:game-monitor\""
+  },
+  {
+   "ref": "backend/domains/game/presentation/runtime.py:33",
+   "code": "async def acquire_game_monitor_lock(redis, token: str, ttl_seconds: int = 5) -> bool:"
+  },
+  {
+   "ref": "backend/domains/game/presentation/runtime.py:38",
+   "code": "async def release_game_monitor_lock(redis, token: str) -> bool:"
+  },
+  {
+   "ref": "backend/domains/matchmaking/application/services.py:101",
+   "code": "token = str(uuid4())"
+  },
+  {
+   "ref": "backend/domains/matchmaking/application/services.py:182",
+   "code": "async def _release_lock(self, redis, lock_key: str, token: str) -> None:"
+  },
+  {
+   "ref": "backend/tests/test_game_monitor_lock.py:24",
+   "code": "async def test_game_monitor_lock_is_exclusive_and_token_released():"
+  },
+  {
+   "ref": "backend/domains/game/application/services.py:31",
+   "code": "def utc_now() -> datetime:"
+  },
+  {
+   "ref": "backend/domains/game/domain/clock.py:61",
+   "code": "elapsed_ms = max(0, int((now - game.last_clock_started_at).total_seconds() * 1000))"
+  },
+  {
+   "ref": "backend/tests/test_game_domain_rules.py:59",
+   "code": "return None"
+  },
+  {
+   "ref": "backend/domains/game/domain/clock.py:13",
+   "code": "@dataclass(frozen=True)"
+  },
+  {
+   "ref": "backend/domains/game/presentation/ws_handler.py:58",
+   "code": "\"clock\": current_clock_snapshot(game),"
+  },
+  {
+   "ref": "frontend/src/shared/hooks/useLiveClock.ts:9",
+   "code": "const lastUpdatedAt = new Date(clock.last_updated_at).getTime();"
+  },
+  {
+   "ref": "backend/tests/test_service_and_serializer_coverage.py:444",
+   "code": "def test_game_clock_moves_and_lifecycle_edges():"
+  },
+  {
+   "ref": "backend/domains/game/domain/policies.py:5",
+   "code": "DEFAULT_DISCONNECT_GRACE_SECONDS = 20"
+  },
+  {
+   "ref": "backend/domains/game/application/services.py:120",
+   "code": "return game, moves"
+  },
+  {
+   "ref": "backend/domains/game/application/services.py:142",
+   "code": ""
+  },
+  {
+   "ref": "backend/tests/test_phase2_game_clocks.py:55",
+   "code": ""
+  },
+  {
+   "ref": "backend/tests/test_phase2_game_clocks.py:85",
+   "code": "assert finished_games[0].status == \"aborted\""
+  },
+  {
+   "ref": "backend/domains/game/application/services.py:66",
+   "code": "existing_moves = await self._repo.get_moves(cmd.game_id)"
+  },
+  {
+   "ref": "backend/domains/game/application/services.py:76",
+   "code": "move_entity = await self._repo.add_move(move_entity)"
+  },
+  {
+   "ref": "backend/domains/game/application/services.py:77",
+   "code": "game = await self._repo.update(game)"
+  },
+  {
+   "ref": "backend/domains/game/application/services.py:78",
+   "code": "await self._repo.commit()"
+  },
+  {
+   "ref": "backend/domains/game/infrastructure/repository.py:203",
+   "code": "async def _persist(self, model: GameModel | MoveModel) -> None:"
+  },
+  {
+   "ref": "backend/tests/test_game_repository_transactions.py:121",
+   "code": "@pytest.mark.asyncio"
+  },
+  {
+   "ref": "backend/domains/game/infrastructure/models.py:50",
+   "code": "fen: Mapped[str] = mapped_column(Text, nullable=False)"
+  },
+  {
+   "ref": "backend/domains/game/infrastructure/models.py:73",
+   "code": "fen_after: Mapped[str] = mapped_column(Text, nullable=False)"
+  },
+  {
+   "ref": "backend/domains/game/domain/moves.py:60",
+   "code": "def _board_with_history(game: Game, previous_moves: Sequence[Move]) -> chess.Board:"
+  },
+  {
+   "ref": "backend/tests/test_game_domain_rules.py:165",
+   "code": "assert finished_game.status == GameStatus.DRAW"
+  },
+  {
+   "ref": "backend/domains/game/infrastructure/repository.py:61",
+   "code": "async def list_by_user(self, user_id: UUID, page: int = 1, size: int = 20) -> tuple[list[Game], int]:"
+  },
+  {
+   "ref": "backend/domains/game/infrastructure/repository.py:71",
+   "code": ".order_by(GameModel.started_at.desc())"
+  },
+  {
+   "ref": "backend/alembic/versions/0011_game_player_history_indexes.py:19",
+   "code": "def upgrade() -> None:"
+  },
+  {
+   "ref": "backend/tests/test_database_bootstrap.py:120",
+   "code": ""
+  },
+  {
+   "ref": "backend/infrastructure/database_migrations.py:78",
+   "code": "async def run_database_migrations(database_url: str | None = None) -> None:"
+  },
+  {
+   "ref": "backend/infrastructure/database_migrations.py:109",
+   "code": "def _upgrade_database(config: Config) -> None:"
+  },
+  {
+   "ref": "backend/alembic/env.py:28",
+   "code": "register_models()"
+  },
+  {
+   "ref": "backend/alembic/versions/0001_baseline.py:16",
+   "code": "def upgrade() -> None:"
+  },
+  {
+   "ref": "backend/tests/test_database_bootstrap.py:12",
+   "code": "async def test_initialize_database_runs_migrations_before_seeding(monkeypatch):"
+  },
+  {
+   "ref": "backend/tests/test_database_bootstrap.py:46",
+   "code": "def test_to_migration_database_url_rewrites_asyncpg_for_alembic():"
+  },
+  {
+   "ref": ".github/workflows/pr-ci.yml:91",
+   "code": "- name: Check migration drift"
+  },
+  {
+   "ref": "backend/infrastructure/security.py:32",
+   "code": "def create_access_token(user_id: str) -> str:"
+  },
+  {
+   "ref": "backend/infrastructure/security.py:53",
+   "code": "def decode_token(token: str) -> dict:"
+  },
+  {
+   "ref": "backend/app/dependencies.py:30",
+   "code": "async def get_current_user_id("
+  },
+  {
+   "ref": "backend/app/ws_entry.py:88",
+   "code": "token = websocket.query_params.get(\"token\")"
+  },
+  {
+   "ref": "backend/tests/test_service_and_serializer_coverage.py:416",
+   "code": "async def test_security_tokens_and_current_user_dependency(monkeypatch):"
+  },
+  {
+   "ref": "e2e/full-stack-real.spec.ts:69",
+   "code": "test.describe(\"real Docker stack workflows\", () => {"
+  },
+  {
+   "ref": "playwright.config.ts:7",
+   "code": "export default defineConfig({"
+  },
+  {
+   "ref": ".github/workflows/pr-ci.yml:175",
+   "code": "e2e:"
+  },
+  {
+   "ref": "e2e/full-stack-real.spec.ts:70",
+   "code": "test(\"runs core user, scheduling, tournament, puzzle, and admin flows\", async ({ browser, page }) => {"
+  },
+  {
+   "ref": "e2e/desktop-smoke.spec.ts:6",
+   "code": "test(\"loads the public player app and navigates to auth\", async ({ page }) => {"
+  },
+  {
+   "ref": ".github/workflows/pr-ci.yml:232",
+   "code": "- name: Run desktop E2E tests"
+  }
+ ]
+}
